@@ -55,3 +55,15 @@ jobs:
             echo "=== $f ==="
             clang -fsyntax-only -Isrc -std=c11 "$f" || echo "FAILED: $f (expected until h2o/FDB headers are on the include path -- tracked in task #3)"
           done
+
+      - name: Unit test -- XRGridEntityPacket vs lean-entity-packet's golden vectors
+        run: |
+          export PATH="/opt/filc/bin:$PATH"
+          # This one has no h2o/FDB/picoquic dependency, so it builds and
+          # actually runs here (unlike the syntax-only check above) --
+          # differential test against v-sekai-multiplayer-fabric/lean-entity-packet's
+          # Plausible-verified golden vectors (task #10).
+          clang -Wall -Wextra -std=c11 -Isrc/gen \
+            src/gen/xr_grid_entity_packet.c test/unit/test_xr_grid_entity_packet.c \
+            -o /tmp/test_xr_grid_entity_packet
+          /tmp/test_xr_grid_entity_packet

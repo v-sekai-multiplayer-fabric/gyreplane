@@ -45,6 +45,16 @@ plus a bare `ZoneTick` (`position += velocity * dt`, no physics) — see
   `swing-twist-kusudama` proofs.
 - Entity/ReBAC types: generated from `lean-entity-packet` and
   `lean-rebac-core` rather than hand-duplicated per language.
+  `src/gen/xr_grid_entity_packet.{c,h}` is a direct C transcription of
+  `lean-entity-packet`'s `EntityPacket/Codec.lean` (100-byte packet,
+  little-endian, no floats on the wire), differentially tested against
+  that repo's 64 Plausible-verified golden vectors
+  (`test/unit/test_xr_grid_entity_packet.c` -- byte-identical round-trip,
+  not just field equality). Not yet wired into `zf_kv.h`'s
+  `zf_entity_val_t`, which still uses a float-double placeholder pending
+  that migration (position/velocity math changes from float `dt`
+  multiplication to fixed-tick integer micrometers). The `lean-rebac-core`
+  half (the `CMD_INSTANCE_ASSET` owner-only ReBAC check) is not started.
 - Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c)
   once the toolchain is wired in (task #3) — this process parses untrusted
   WebTransport input directly from clients.
