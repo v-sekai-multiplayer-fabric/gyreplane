@@ -17,6 +17,18 @@ import { test, expect } from '@playwright/test';
  * own Fly test app, while it exists, or a future stable deployment).
  * No default -- a missing env var should fail loudly, not silently
  * test nothing.
+ *
+ * Real finding, worth recording: against an IPv6-only host (this
+ * project's own Fly deployments are IPv6-only by design, see
+ * fly/fly.toml's own comment), Chromium's built-in DNS resolver can
+ * fail to resolve the hostname even when curl/Node's plain http
+ * client resolve it instantly in the same environment -- confirmed
+ * directly, not assumed, including with --no-sandbox to rule out a
+ * sandbox network-namespace cause. Navigating to the bracketed IPv6
+ * literal (e.g. http://[2a09:...]/) instead of the hostname works
+ * around it. If this test times out on page.goto() against a real,
+ * curl-reachable IPv6-only host, try the literal address first before
+ * assuming the deployment itself is broken.
  */
 
 const baseURL = process.env.MUD_BASE_URL;
