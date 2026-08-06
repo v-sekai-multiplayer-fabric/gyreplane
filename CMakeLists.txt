@@ -10,10 +10,16 @@ find_library(Z_LIB z REQUIRED)
 find_library(SSL_LIB ssl REQUIRED)
 find_library(CRYPTO_LIB crypto REQUIRED)
 find_library(FDB_C_LIB fdb_c REQUIRED)
+# src/utility.c (ported as-is from h2o-bench-tpcc) genuinely uses yajl
+# for JSON generation -- this was wrongly assumed TFB-only and dropped
+# when this CMakeLists.txt was first written; the real CI build (task
+# #17) caught the missing dependency.
+find_library(YAJL_LIB yajl REQUIRED)
 
 find_path(H2O_INCLUDE h2o.h REQUIRED)
 find_path(OPENSSL_INCLUDE openssl/ssl.h REQUIRED)
 find_path(FDB_INCLUDE foundationdb/fdb_c.h REQUIRED)
+find_path(YAJL_INCLUDE yajl/yajl_gen.h REQUIRED)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -49,11 +55,11 @@ file(GLOB PHYSICS_SOURCES "src/physics/*.c")
 
 add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES} ${GEN_SOURCES} ${PHYSICS_SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
-    src ${CMAKE_BINARY_DIR} ${H2O_INCLUDE} ${OPENSSL_INCLUDE} ${FDB_INCLUDE})
+    src ${CMAKE_BINARY_DIR} ${H2O_INCLUDE} ${OPENSSL_INCLUDE} ${FDB_INCLUDE} ${YAJL_INCLUDE})
 target_compile_definitions(${PROJECT_NAME} PRIVATE H2O_USE_LIBUV=0)
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS} ${WARNING_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} picoquic_vendored mujoco m)
+    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored mujoco m)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
