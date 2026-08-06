@@ -88,3 +88,10 @@ jobs:
             src/zf_kv.c src/gen/xr_grid_entity_packet.c test/unit/test_zf_kv_multi_zone.c \
             -o /tmp/test_zf_kv_multi_zone
           /tmp/test_zf_kv_multi_zone
+
+      - name: Unit test -- sinew-mocap/solve Align.lean port (task #16)
+        run: |
+          export PATH="/opt/filc/bin:$PATH"
+          clang -Wall -Wextra -std=c11 -Isrc/gen -lm \
+            src/gen/sinew_align.c test/unit/test_sinew_align.c -o /tmp/test_sinew_align
+          /tmp/test_sinew_align

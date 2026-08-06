@@ -54,24 +54,38 @@ way `xr_grid_entity_packet.c` was validated against `lean-entity-packet`'s
 golden vectors. Track this as its own scoped task when that budget
 exists, not folded into task #8's current entity-physics scope.
 
-## Revision
+## Revision 1 (superseded by Revision 2)
 
 Per direct instruction, `sinew-mocap/solve`'s avatar-posing role is now
 built on a QP-based IK core mirroring `mink`'s architecture (task #16,
 revised), rather than staying on plain FK + LBS with `mink` deferred
-wholesale. The scope split:
+wholesale.
 
-- **Task #16** ports the QP-assembly core `mink`'s `solve_ik.py`
-  implements (task residuals + Levenberg-Marquardt damping as the QP
-  objective, `mj_jac*` Jacobians from the already-vendored MuJoCo),
-  applied specifically to `sinew-mocap/solve`'s avatar-posing use case.
-  Still needs a vendored C QP solver (OSQP).
-- **Task #17** stays deferred: the rest of `mink`'s surface (joint/
-  velocity/collision-avoidance limits as QP inequalities, closed-chain
-  equality constraints, the full Lie group module, multi-task weighting
-  beyond one avatar-posing task) that task #16's narrower scope doesn't
-  need. May turn out unnecessary once #16 is built and proven.
+## Revision 2 (current)
 
-The "large, multi-session effort" sizing above still applies to task
-#16's revised scope -- it does not become small because it is scoped
-narrower, only more clearly bounded.
+Revision 1 was wrong, caught by a direct correction: `sinew-mocap/solve`
+follows this org's Lean-first convention (Lean spec -> Slang codegen,
+same as `lean-entity-packet` and `lean-rebac-core`'s Lean -> C pattern),
+and its own Lean source (`core/spec/Sinew/Align.lean`, read directly, not
+assumed) is **not** a QP-based solver at all. It is Kabsch-style rotation
+fitting -- `rodrigues` for one vector pair, a Newton-Schulz-orthogonalized
+covariance (`ns30`) for two or more, falling back to a Jacobi-SVD Kabsch
+solve (`kabsch`) when the fast path produces an invalid rotation. No QP,
+no `qpsolvers`, no MuJoCo dependency for this part at all.
+
+Task #16 now ports `Align.lean` directly (`src/gen/sinew_align.{c,h}`),
+verified against the exact same known-rotation-recovery test
+`core/spec/AlignTest.lean` itself uses (quaternion (0.5,0.5,0.5,0.5),
+the same five source vectors, the same N=5/N=2/N=1 cases) --
+`test/unit/test_sinew_align.c` reproduces it and recovers the rotation
+to floating-point precision at all three. This is **done**, not
+deferred -- much smaller and more tractable than either Revision 1's QP
+framing or the original mink-wholesale framing, because it is the
+algorithm the org actually already trusts and has proven, not a
+heavier one substituted in from outside.
+
+Task #17 (`mink` feature parity: limits, closed-chain constraints, the
+Lie group module, multi-task weighting) stays deferred and unrelated to
+task #16's now-completed scope -- it would only become relevant if a
+genuinely different, `mink`-shaped IK need arises later, not as a
+continuation of `Align.lean`'s already-sufficient algorithm.
