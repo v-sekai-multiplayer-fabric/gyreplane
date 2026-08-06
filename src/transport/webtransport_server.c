@@ -179,9 +179,14 @@ static void on_udp_readable(h2o_socket_t *sock, const char *err)
             break; /* EAGAIN or error -- drained for this readiness event */
         }
 
+        /* AF_INET6, matching create_udp_socket()'s own real bound
+         * family -- this was AF_INET/sockaddr_in here unconditionally
+         * before the IPv6-only switch, a real mismatch against the
+         * actual socket that would have fed picoquic a local address
+         * of the wrong family for every packet. */
         memset(&local_addr, 0, sizeof(local_addr));
-        ((struct sockaddr_in *)&local_addr)->sin_family = AF_INET;
-        ((struct sockaddr_in *)&local_addr)->sin_port = htons((uint16_t)server->port);
+        ((struct sockaddr_in6 *)&local_addr)->sin6_family = AF_INET6;
+        ((struct sockaddr_in6 *)&local_addr)->sin6_port = htons((uint16_t)server->port);
 
         picoquic_incoming_packet(server->quic, recv_buffer, (size_t)n,
             (struct sockaddr *)&peer_addr, (struct sockaddr *)&local_addr,
@@ -205,20 +210,28 @@ static void on_timer_fire(h2o_socket_t *sock, const char *err)
     flush_outbound(server);
 }
 
+/* IPv6-only, not dual-stack: Fly.io's free tier gives unlimited
+ * Anycast IPv6 addresses but charges $2/mo for a dedicated IPv4
+ * (confirmed against Fly's own pricing docs, not guessed) -- binding
+ * IPv6 explicitly, with IPV6_V6ONLY set, means this process never
+ * touches IPv4 at all, matching a real request to test without an
+ * IPv4 dependency. A dual-stack socket would still work over IPv4 via
+ * mapped addresses; V6ONLY rules that out on purpose. */
 static int create_udp_socket(int port)
 {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET6, SOCK_DGRAM, 0);
     if (fd < 0) {
         return -1;
     }
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
 
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons((uint16_t)port);
+    struct sockaddr_in6 addr = {0};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons((uint16_t)port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
