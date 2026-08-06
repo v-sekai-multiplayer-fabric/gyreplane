@@ -55,12 +55,16 @@ i=0
 while [ "$i" -lt "$N" ]; do
   port=$((BASE_PORT + i))
   mkdir -p "$DATA_ROOT/$i"
+  # :tls must be on --listen-address/--public-address too, not just the
+  # cluster file's coordinator entry -- confirmed by the real error the
+  # first attempt hit: "TLS state of public address 127.0.0.1:4500 does
+  # not match in coordinator list."
   fdbserver \
     --cluster-file "$CLUSTER_FILE" \
     --datadir "$DATA_ROOT/$i" \
     --logdir "$LOG_ROOT" \
-    --listen-address "127.0.0.1:$port" \
-    --public-address "127.0.0.1:$port" \
+    --listen-address "127.0.0.1:$port:tls" \
+    --public-address "127.0.0.1:$port:tls" \
     --tls-certificate-file "$TLS_DIR/fdbserver.crt" \
     --tls-key-file "$TLS_DIR/fdbserver.key" \
     --tls-ca-file "$TLS_DIR/ca.crt" \
