@@ -8,16 +8,36 @@ authoritative zone server moves.
 
 ## Status
 
-Pre-transport spike. No WebTransport/QUIC listener yet. The event-loop,
-worker-pool, and FDB scaffold below are seeded from
+QUIC transport and H3/WebTransport session negotiation are both wired
+(`src/transport/webtransport_server.c`, `src/transport/wt_session.c`),
+driving a real FDB-backed `ZoneTick` (`src/zf_zonetick.c`) across a small
+fabric of zones (`WT_SERVER_ZONE_FABRIC_SIZE`, currently 4) — not a
+single hardcoded zone. Not yet done: TLS cert/key (still `NULL`/`NULL`,
+so unauthenticated), physics/IK, and cutover from the Godot deployment.
+The event-loop, worker-pool, and FDB scaffold were seeded from
 [`weftspun/h2o-bench-tpcc`](https://github.com/weftspun/h2o-bench-tpcc)
 (that repo's TPC-C benchmark work is unrelated and stays there; only the
 reusable infrastructure and the unimplemented `zonefabric` scenario design
 carried forward here).
 
-First working milestone (in progress): a WebTransport datagram round-trip
-plus a bare `ZoneTick` (`position += velocity * dt`, no physics) — see
-`src/main.c`'s `TODO(task #11)`.
+### Concurrency and scaling
+
+Each zone in the fabric gets its own independent FDB transaction
+(`zf_zonetick_run`, one call per zone, no cross-zone lock or shared
+state) — RFD 0002's own core-scaling argument ("no cross-zone
+conflicts... near-linear core scaling, unlike TPC-C") depends on exactly
+that independence, and `test/unit/test_zf_kv_multi_zone.c` proves the
+FDB keyspace isolation it relies on (6 test zones, no entity key from one
+zone ever falls inside another's range). **Not yet measured**: actual
+linear scaling of concurrent zone ticks needs a running FDB cluster and
+a load generator (RFD 0013's `wrk` harness) — this repo's test suite
+cannot exercise that without live infrastructure, so it's a real,
+open verification gap, not a claim made and left unchecked.
+
+"Fabric of zones" here means *one process handling several zones* — it
+does not yet mean multiple zone-server processes coordinating with each
+other. That's a distinct, larger question (`docs/0001-defer-nogod-gossip-authority.md`),
+deliberately deferred until there's a second process to coordinate with.
 
 ## Design provenance
 
