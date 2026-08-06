@@ -53,8 +53,20 @@ RUN cmake -B build -DCMAKE_PREFIX_PATH="/opt/h2o" -DCMAKE_BUILD_TYPE=RelWithDebI
 # real static lib + generated settings header
 # mud/orchestrator/README.md's own build recipe needs -- built once
 # here, not per-request at runtime.
+#
+# RISCV_BINARY_TRANSLATION=OFF: a real fix for a real problem, not a
+# preemptive guess. The first deploy of this exact image OOM-killed
+# mud-sandbox-orchestrator on a 256mb machine (anon-rss ~121MB for
+# that one process, confirmed via `flyctl logs`'s own kernel OOM
+# line). libriscv's default build (lib/CMakeLists.txt's own
+# RISCV_BINARY_TRANSLATION option, ON by default) links libtcc, a
+# full embedded C compiler, to JIT-compile guest code -- real
+# overhead this small MUD guest's own game logic does not need
+# (mud_guest.cpp is no hot physics loop, matching the plan's own
+# note that this guest is "smaller than the Godot guest"). Disabling
+# it drops that dependency entirely.
 RUN cmake -S thirdparty/libriscv/emulator -B thirdparty/libriscv/emulator/build \
-      -DCMAKE_BUILD_TYPE=Release && \
+      -DCMAKE_BUILD_TYPE=Release -DRISCV_BINARY_TRANSLATION=OFF && \
     cmake --build thirdparty/libriscv/emulator/build -j
 
 # The MUD guest, cross-compiled static riscv64-musl, and the host-side
