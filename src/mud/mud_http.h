@@ -29,4 +29,13 @@ void mud_http_register(h2o_hostconf_t *hostconf, const char *docroot, const char
  * Returns 0 on success, -1 on a real bind/listen/TLS-setup failure. */
 int mud_http_listen(h2o_context_t *ctx, h2o_loop_t *loop, int port, const char *cert_file, const char *key_file);
 
+/* Real per-tick safety-net flush for connected /api/mud/stream SSE
+ * clients -- not a per-tick send to every client (see mud_http.c's own
+ * block comment on the SSE registry for why). Call from
+ * on_zonetick_timer_fire() (webtransport_server.c), the existing
+ * ZONE_TICK_HZ driver, every tick. A no-op when nothing is queued,
+ * which is the common case since sse_push() already sends immediately
+ * whenever a client is ready. */
+void mud_http_flush_streams(void);
+
 #endif // MUD_HTTP_H_

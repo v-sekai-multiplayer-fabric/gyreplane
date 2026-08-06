@@ -1,15 +1,25 @@
 #include "mud_http.h"
 #include "mud_cbor.h"
 #include "mud_session.h"
+#include "utility.h"
 
 #include <netinet/in.h>
 #include <openssl/ssl.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <yajl/yajl_parse.h>
+
+/* Forward declaration: sse_push() is defined with the rest of the SSE
+ * client registry further down (near on_mud_stream()), but
+ * on_mud_command() -- defined first, matching this file's original
+ * top-to-bottom handler order -- needs to call it too. */
+static void sse_push(const char *session_id, const char *text, size_t len);
 
 /* ---------------------------------------------------------------------
  * POST /api/mud/command body parsing: {"session_id", "command",
@@ -190,6 +200,11 @@ static int on_mud_command(h2o_handler_t *self, h2o_req_t *req) {
     }
 
     h2o_iovec_t json = cbor_result_to_json(&req->pool, result, result_len);
+    size_t narration_len = 0;
+    const uint8_t *narration = mud_cbor_map_get_str(result, result_len, "narration", &narration_len);
+    if (narration != NULL) {
+        sse_push(parsed.session_id, (const char *)narration, narration_len);
+    }
     free(result);
 
     static h2o_generator_t generator = {NULL, NULL};
@@ -202,22 +217,99 @@ static int on_mud_command(h2o_handler_t *self, h2o_req_t *req) {
 }
 
 /* ---------------------------------------------------------------------
- * GET /api/mud/stream (SSE) -- path registered for real, headers sent
- * for real, but the actual per-tick push (task #29's own job: wiring
- * on_zonetick_timer_fire() in webtransport_server.c to write narration
- * deltas to every connected stream) is not implemented yet. The
- * generator's own proceed callback is a real, intentional no-op stub
- * until then, not a placeholder pretending to be finished -- this
- * response starts and stays open, matching a real SSE connection's own
- * shape, but currently pushes nothing further after its first comment
- * line.
+ * GET /api/mud/stream?session_id=... (SSE) -- a real, backpressure-
+ * respecting async push, not a placeholder. h2o's own generator
+ * contract (h2o.h's st_h2o_generator_t comment, confirmed against
+ * examples/libh2o/simple.c's own send-once-then-wait-for-proceed
+ * pattern): the core only calls proceed() when it is ready for the
+ * *next* chunk. Calling h2o_send() again before that would violate the
+ * contract, so a push that arrives while a previous send has not yet
+ * been "proceed()"-acknowledged is queued (single-slot, latest wins --
+ * a narration stream only needs eventual consistency, not a perfect
+ * backlog) instead of sent immediately.
+ *
+ * The 64 Hz zonetick (on_zonetick_timer_fire() in
+ * webtransport_server.c, via mud_http_flush_streams() below) is
+ * therefore NOT a per-tick send to every client -- that would mean 64
+ * SSE frames/sec/client, real bandwidth this session's own earlier
+ * "NIC traffic is the bottleneck" finding already argued against. It
+ * is a periodic safety-net flush: if a client is ready and has
+ * queued content waiting, send it now, matching the tick rate the
+ * rest of the fabric already runs at without adding a second timer.
  * ------------------------------------------------------------------- */
 
-static void mud_stream_proceed(h2o_generator_t *self, h2o_req_t *req) {
-    (void)self;
+#define MUD_SSE_MAX_CLIENTS 64
+#define MUD_SSE_PENDING_CAP 512
+
+typedef struct {
+    char session_id[64];
+    h2o_req_t *req;
+    h2o_generator_t generator;
+    bool in_use;
+    bool ready; /* true once core has proceed()-acknowledged the last send */
+    bool has_pending;
+    char pending[MUD_SSE_PENDING_CAP];
+    size_t pending_len;
+} mud_sse_client_t;
+
+static mud_sse_client_t g_sse_clients[MUD_SSE_MAX_CLIENTS];
+
+static mud_sse_client_t *sse_client_from_generator(h2o_generator_t *self) {
+    return (mud_sse_client_t *)((char *)self - offsetof(mud_sse_client_t, generator));
+}
+
+static void sse_send_now(mud_sse_client_t *client, const char *text, size_t len) {
+    h2o_iovec_t frame = h2o_concat(&client->req->pool, h2o_iovec_init(H2O_STRLIT("data: ")),
+                                    h2o_iovec_init(text, len), h2o_iovec_init(H2O_STRLIT("\n\n")));
+    h2o_send(client->req, &frame, 1, H2O_SEND_STATE_IN_PROGRESS);
+    client->ready = false;
+}
+
+/* Pushes `text` to every connected SSE client subscribed to
+ * `session_id`. Real callers: on_mud_command() below (immediate push
+ * of each turn's own narration) and, indirectly, mud_http_flush_streams()
+ * for anything that could not be sent immediately. */
+static void sse_push(const char *session_id, const char *text, size_t len) {
+    for (int i = 0; i < MUD_SSE_MAX_CLIENTS; i++) {
+        mud_sse_client_t *client = &g_sse_clients[i];
+        if (!client->in_use || strcmp(client->session_id, session_id) != 0) {
+            continue;
+        }
+        if (client->ready) {
+            sse_send_now(client, text, len);
+        } else {
+            size_t copy_len = len < MUD_SSE_PENDING_CAP ? len : MUD_SSE_PENDING_CAP;
+            memcpy(client->pending, text, copy_len);
+            client->pending_len = copy_len;
+            client->has_pending = true;
+        }
+    }
+}
+
+void mud_http_flush_streams(void) {
+    for (int i = 0; i < MUD_SSE_MAX_CLIENTS; i++) {
+        mud_sse_client_t *client = &g_sse_clients[i];
+        if (client->in_use && client->ready && client->has_pending) {
+            sse_send_now(client, client->pending, client->pending_len);
+            client->has_pending = false;
+        }
+    }
+}
+
+static void sse_proceed(h2o_generator_t *self, h2o_req_t *req) {
     (void)req;
-    /* Intentionally empty -- see the block comment above. Task #29
-     * replaces this with a real per-session queue flush. */
+    mud_sse_client_t *client = sse_client_from_generator(self);
+    client->ready = true;
+    if (client->has_pending) {
+        sse_send_now(client, client->pending, client->pending_len);
+        client->has_pending = false;
+    }
+}
+
+static void sse_stop(h2o_generator_t *self, h2o_req_t *req) {
+    (void)req;
+    mud_sse_client_t *client = sse_client_from_generator(self);
+    memset(client, 0, sizeof(*client));
 }
 
 static int on_mud_stream(h2o_handler_t *self, h2o_req_t *req) {
@@ -226,12 +318,42 @@ static int on_mud_stream(h2o_handler_t *self, h2o_req_t *req) {
         return -1;
     }
 
-    static h2o_generator_t generator = {mud_stream_proceed, NULL};
+    const char *query = req->query_at != SIZE_MAX ? req->path.base + req->query_at + 1 : NULL;
+    size_t query_len = query != NULL ? req->path.len - req->query_at - 1 : 0;
+    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id")) : NULL;
+    if (session_id == NULL) {
+        send_json_error(req, 400, "missing session_id query parameter");
+        return 0;
+    }
+
+    mud_sse_client_t *client = NULL;
+    for (int i = 0; i < MUD_SSE_MAX_CLIENTS; i++) {
+        if (!g_sse_clients[i].in_use) {
+            client = &g_sse_clients[i];
+            break;
+        }
+    }
+    if (client == NULL) {
+        send_json_error(req, 503, "too many concurrent mud streams");
+        return 0;
+    }
+
+    memset(client, 0, sizeof(*client));
+    snprintf(client->session_id, sizeof(client->session_id), "%s", session_id);
+    client->req = req;
+    client->generator.proceed = sse_proceed;
+    client->generator.stop = sse_stop;
+    client->in_use = true;
+    client->ready = false; /* the send below is the "first chunk," matching
+                             * simple.c's own send-immediately-after-start
+                             * pattern -- ready flips true on the next
+                             * real proceed() from core. */
+
     req->res.status = 200;
     req->res.reason = "OK";
     h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_CONTENT_TYPE, NULL, H2O_STRLIT("text/event-stream"));
     h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_CACHE_CONTROL, NULL, H2O_STRLIT("no-cache"));
-    h2o_start_response(req, &generator);
+    h2o_start_response(req, &client->generator);
     h2o_iovec_t hello = h2o_iovec_init(H2O_STRLIT(": mud stream connected\n\n"));
     h2o_send(req, &hello, 1, H2O_SEND_STATE_IN_PROGRESS);
     return 0;

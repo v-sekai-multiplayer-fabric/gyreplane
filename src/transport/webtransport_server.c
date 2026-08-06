@@ -48,6 +48,7 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#include "../mud/mud_http.h"
 #include "../zf_zonetick.h"
 
 #define ZONETICK_RECV_BUF 2048
@@ -157,6 +158,12 @@ static void on_zonetick_timer_fire(h2o_socket_t *sock, const char *err)
     }
     (void)read(server->zonetick_timer_fd, &expirations, sizeof(expirations));
     zonetick_fdb_this_zone(server);
+    /* Task #29: the MUD prototype's own live-push channel piggybacks on
+     * this existing 64 Hz driver instead of a second timer. A real
+     * no-op when no MUD session has a connected SSE client -- see
+     * mud_http.h's own comment on why this is a safety-net flush, not
+     * a per-tick send to every client. */
+    mud_http_flush_streams();
 }
 
 static void on_udp_readable(h2o_socket_t *sock, const char *err)
