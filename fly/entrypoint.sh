@@ -77,7 +77,19 @@ echo "entrypoint: started $N fdbserver processes on ports $BASE_PORT..$((BASE_PO
 # cannot reach a TLS-only cluster to run the configure commands below.
 export FDB_TLS_CERTIFICATE_FILE="$TLS_DIR/client.crt"
 export FDB_TLS_KEY_FILE="$TLS_DIR/client.key"
-export FDB_TLS_CA_FILE="$TLS_DIR/ca.crt"
+# FDB_TLS_CA_FILE is not scoped to cluster mTLS only -- FDB's own docs
+# (backups.html's TLS section) confirm the same five FDB_TLS_* vars
+# also govern blob-store HTTPS connections (fdbbackup's own Tigris
+# traffic). Pointing it at only our self-signed cluster CA overrides
+# the system's default trust store entirely, so fdbbackup could no
+# longer verify Tigris's real, publicly-trusted certificate -- a real
+# bug found live (see the backup loop's own comment below for the
+# full diagnosis). Fixed by trusting both: our own cluster CA plus the
+# real system CA bundle, concatenated, so cluster mTLS and blob-store
+# TLS both keep working from the one shared FDB_TLS_CA_FILE.
+COMBINED_CA_FILE="$TLS_DIR/combined-ca.pem"
+cat "$TLS_DIR/ca.crt" /etc/ssl/certs/ca-certificates.crt >"$COMBINED_CA_FILE"
+export FDB_TLS_CA_FILE="$COMBINED_CA_FILE"
 
 for i in $(seq 1 30); do
   if fdbcli -C "$CLUSTER_FILE" --exec "configure new single memory" 2>/dev/null; then
@@ -124,36 +136,35 @@ done
 # blobstore URL via --blob-credentials's own documented JSON file
 # form ({"accounts":{"user@host":{"secret":"..."}}}), not embedded in
 # the URL where `ps` could see it.
-# KNOWN REAL LIMITATION, not yet resolved: a live test against a real
-# Tigris bucket (muddy-pine-8190, this project's own throwaway test)
-# got past the region-URL and exit-status bugs above, then hit a
-# further real failure every single cycle: "Could not create backup
-# container: Operation timed out". Real diagnosis performed, not
-# guessed:
-#   - curl and getent both work instantly against the exact same host
-#     from the exact same machine (fly.storage.tigris.dev resolves to
-#     both an A record 149.248.213.147 and an AAAA record; a plain
-#     `curl https://fly.storage.tigris.dev/` gets a real HTTP/2 307
-#     response in well under a second).
-#   - fdbbackup's own --log trace file shows
-#     Type="BlobStoreDoRequestError" Error="lookup_failed"
-#     ErrorDescription="DNS lookup failed" for the hostname form.
-#   - Substituting the literal IPv4 address directly in the
-#     blobstore:// URL (bypassing DNS entirely) reproduces the exact
-#     same "Operation timed out" failure, ruling out DNS resolution
-#     itself as the real cause -- FDB's own blob-store network client
-#     cannot complete a connection here at all, hostname or IP, while
-#     the OS's own resolver/TLS stack (curl) has no trouble on the
-#     same machine. This points at something inside FDB's own
-#     network-stack implementation (its blob client does not use
-#     libcurl/the OS TLS stack) interacting badly with this specific
-#     environment, not this script's own logic.
-# Left running as designed (it retries every BACKUP_INTERVAL_SECONDS
-# forever, matching a real transient-outage posture) rather than
-# disabled, since the region/exit-status fixes above are real and
-# correct regardless of this separate, deeper problem. Root-causing
-# FDB's own blob-store client further is real, unstarted follow-up
-# work.
+# RESOLVED, corrected diagnosis: a live test against a real Tigris
+# bucket (muddy-pine-8190, this project's own throwaway test) got past
+# the region-URL and exit-status bugs above, then hit "Could not
+# create backup container: Operation timed out" every cycle. This
+# looked network-shaped (curl/getent both connect to the same host
+# from the same machine instantly, and a literal-IP blobstore:// URL
+# reproduced the identical timeout), but the real cause was TLS trust,
+# not connectivity: FDB_TLS_CA_FILE was set above to only this
+# cluster's own self-signed CA, and FDB's own docs (backups.html's TLS
+# section) confirm the same FDB_TLS_* vars also govern blob-store
+# HTTPS -- so fdbbackup could never verify Tigris's real certificate,
+# and failed in a way that surfaced as a generic timeout rather than a
+# clear certificate error. Fixed at the shared FDB_TLS_CA_FILE export
+# above (combined-ca.pem), confirmed live: the exact same timeout
+# error stopped occurring once fdbbackup was run with a combined CA
+# bundle instead of the cluster-only one.
+#
+# KNOWN REAL LIMITATION, not yet resolved: with TLS trust fixed,
+# fdbbackup now gets a real, different error instead:
+# "ERROR: Client tried to access unauthorized data" / "Fatal Error:
+# Backup error". Confirmed this is not a lock/availability problem
+# (fdbcli status minimal reports "The database is available."). Not
+# yet root-caused -- FDB's own backup tooling needs some additional
+# access/trust configuration this cluster does not have yet, worth
+# investigating directly against FDB's own source
+# (special-keys.html/tenants.html were checked, neither gave a direct
+# match) rather than guessed at further here. Left running as designed
+# (retries every BACKUP_INTERVAL_SECONDS forever) rather than
+# disabled, matching a real transient-condition posture.
 if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
   BACKUP_SLOTS=${BACKUP_SLOTS:-4}
   BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-21600} # 4x/day
