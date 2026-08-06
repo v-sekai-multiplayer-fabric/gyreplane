@@ -13,3 +13,14 @@ set(MUJOCO_BUILD_SIMULATE OFF CACHE BOOL "" FORCE)
 set(MUJOCO_ENABLE_PLUGINS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/thirdparty/mujoco ${CMAKE_BINARY_DIR}/mujoco-build)
+
+# MuJoCo's own cmake/MujocoOptions.cmake sets -Werror unconditionally for
+# GCC/Clang. The first real CI build (task #17) hit this: combined with
+# our own -Wextra leaking in (fixed in the top-level CMakeLists.txt,
+# include/compile-options are now target-scoped, not global), mujoco's
+# own pre-existing warnings (unused-parameter, old-style-declaration,
+# type-limits, all in mujoco's own upstream source, not ours) became
+# fatal errors. -Wno-error here is defensive on top of that fix -- we
+# do not want a third-party vendor's own strictness blocking our build
+# over warnings in code we do not own and should not be patching.
+target_compile_options(mujoco PRIVATE -Wno-error)

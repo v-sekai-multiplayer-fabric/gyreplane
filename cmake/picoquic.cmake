@@ -36,7 +36,18 @@ add_library(picoquic_vendored STATIC
     ${PICOTLS_SOURCES}
 )
 
-target_include_directories(picoquic_vendored PUBLIC
+# BEFORE matters here: h2o's own CMakeLists.txt installs its bundled,
+# different-version deps/picotls/include/*.h into /opt/h2o/include (the
+# main CMakeLists.txt's global include_directories(... ${H2O_INCLUDE})
+# picks that up for every target, including this one). Without BEFORE,
+# the compiler found h2o's older picotls.h ahead of this vendored one
+# when compiling thirdparty/picotls/lib/picotls.c against it --
+# "conflicting types for ptls_build_v4_mapped_v6_address", "unknown
+# type name ptls_log_getsni_t" -- confirmed by reading h2o's own
+# CMakeLists.txt install rules directly, not guessed. This ensures our
+# own picotls headers are found first for this target regardless of
+# global include-directory ordering.
+target_include_directories(picoquic_vendored BEFORE PUBLIC
     ${PICOTLS_ROOT}/include
     ${PICOQUIC_ROOT}/picoquic
     ${PICOQUIC_ROOT}/picohttp
