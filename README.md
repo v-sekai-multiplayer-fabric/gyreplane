@@ -60,9 +60,16 @@ deliberately deferred until there's a second process to coordinate with.
 - Entity/migration/ghost/journal shape: modeled on the real (if
   never-yet-invoked) `FabricZone` C++ engine in
   `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.
-- Physics/IK: ports [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)
-  (FK + LBS skinning), constrained by the `lean-humanoid-rom` and
-  `swing-twist-kusudama` proofs.
+- Physics: [MuJoCo](https://github.com/google-deepmind/mujoco) 3.11.0
+  (`src/physics/`) for entity/prop contact physics -- collisions, joints,
+  forces. Confirmed via its own header that MuJoCo has no first-party IK
+  (only Jacobian primitives), so it is not the IK layer.
+- Avatar IK/posing: [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)'s
+  own `Align.lean` (Kabsch-style rotation fitting -- `src/gen/sinew_align.c`),
+  not `kevinzakka/mink`'s QP-based approach (evaluated and deferred,
+  `docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`). Verified against
+  `Align.lean`'s own `AlignTest.lean` known-rotation-recovery test --
+  floating-point-exact recovery, not just within tolerance.
 - Entity/ReBAC types: generated from `lean-entity-packet` and
   `lean-rebac-core` rather than hand-duplicated per language.
   `src/gen/xr_grid_entity_packet.{c,h}` is a direct C transcription of
