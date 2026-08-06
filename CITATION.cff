@@ -1,8 +1,13 @@
 cff-version: 1.2.0
 message: >-
-  mud/guest/mud_guest.cpp is a C++ port of this project's Middleham MUD
-  state-machine and dialogue classifier. Cite CrucibleBench_Phase1 for
-  that content.
+  If you use this software, cite it as below. mud/guest/mud_guest.cpp
+  is one guest ELF among several this project's own raw-libriscv
+  sandbox architecture is built to host (a Godot guest ELF is the
+  other one named in the sandboxed-godot-in-zone-server-h2o decision
+  doc, multiplayer-fabric-manuals PR #128) -- not the whole of
+  zone-server-h2o, which also has its own WebTransport/QUIC transport,
+  FDB zone state, physics, and avatar IK. See the references entry
+  below for the MUD guest's own separate provenance.
 title: zone-server-h2o
 type: software
 url: https://github.com/v-sekai-multiplayer-fabric/zone-server-h2o
