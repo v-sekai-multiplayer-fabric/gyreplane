@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: >-
+  mud/guest/mud_guest.cpp is a C++ port of this project's Middleham MUD
+  state-machine and dialogue classifier. Cite CrucibleBench_Phase1 for
+  that content.
+title: zone-server-h2o
+type: software
+url: https://github.com/v-sekai-multiplayer-fabric/zone-server-h2o
+references:
+  - type: software
+    title: CrucibleBench_Phase1
+    authors:
+      - name: CrucibleBench
+    url: https://github.com/CrucibleBench/CrucibleBench_Phase1
+    license: MIT
+    notes: >-
+      Source of the Middleham MUD scenario ported to
+      mud/guest/mud_guest.cpp -- Source_Code/state_machine.py's
+      MiddlehamStateMachine (rooms, NPCs, items, commands, trust/
+      suspicion, objectives) and Source_Code/classifier.py's
+      _fallback_classification(). See mud_guest.cpp's own file header
+      for the full provenance note and its one documented deviation
+      (a ChaCha20 PRNG in place of CPython's Mersenne Twister).
