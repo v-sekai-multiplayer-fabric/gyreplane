@@ -86,9 +86,10 @@ RUN cmake -S thirdparty/libriscv/emulator -B thirdparty/libriscv/emulator/build 
 # cross gcc, then linked with the cross g++.
 RUN CROSS=/opt/riscv64-musl-toolchain/bin/riscv64-buildroot-linux-musl && \
     mkdir -p /tmp/qcbor-rv64-obj && \
-    for f in qcbor_encode qcbor_decode qcbor_err_to_str UsefulBuf ieee754; do \
+    for src in thirdparty/QCBOR/src/*.c; do \
+      f=$(basename "$src" .c); \
       "${CROSS}-gcc" -c -O2 -I thirdparty/QCBOR/inc \
-        -o "/tmp/qcbor-rv64-obj/$f.o" "thirdparty/QCBOR/src/$f.c"; \
+        -o "/tmp/qcbor-rv64-obj/$f.o" "$src"; \
     done && \
     "${CROSS}-g++" -std=c++17 -O2 -static \
       -I thirdparty/QCBOR/inc \

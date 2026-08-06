@@ -11,13 +11,12 @@
 
 set(QCBOR_DIR "${CMAKE_SOURCE_DIR}/thirdparty/QCBOR")
 
-set(QCBOR_SOURCES
-    ${QCBOR_DIR}/src/qcbor_encode.c
-    ${QCBOR_DIR}/src/qcbor_decode.c
-    ${QCBOR_DIR}/src/qcbor_err_to_str.c
-    ${QCBOR_DIR}/src/UsefulBuf.c
-    ${QCBOR_DIR}/src/ieee754.c
-)
+# v2 (dev branch, real commit pinned via git subtree add's own squash
+# commit) splits the old monolithic qcbor_encode.c/qcbor_decode.c into
+# several files (qcbor_main_encode.c, qcbor_number_decode.c, ...) --
+# globbed rather than hardcoded so a future QCBOR update does not
+# silently drop a new file the way a fixed list would.
+file(GLOB QCBOR_SOURCES "${QCBOR_DIR}/src/*.c")
 
 add_library(qcbor_vendored STATIC ${QCBOR_SOURCES})
 target_include_directories(qcbor_vendored PUBLIC ${QCBOR_DIR}/inc)
