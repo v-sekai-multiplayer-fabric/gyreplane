@@ -15,11 +15,24 @@ file(GLOB PICOQUIC_CORE_SOURCES "${PICOQUIC_ROOT}/picoquic/*.c")
 file(GLOB PICOHTTP_SOURCES "${PICOQUIC_ROOT}/picohttp/*.c")
 file(GLOB PICOQUIC_MBEDTLS_SOURCES "${PICOQUIC_ROOT}/picoquic_mbedtls/*.c")
 
-# Same exclusions as SCsub: OpenSSL/Fusion/minicrypto TLS backends unused
-# (mbedtls only), Windows-only packet loop unused on Linux.
+# OpenSSL and Fusion backends are unused (mbedtls only), and each has its
+# own #ifndef PTLS_WITHOUT_OPENSSL / #if !defined(PTLS_WITHOUT_FUSION) guard
+# in tls_api.c, so leaving the .c files out of the build is safe.
+#
+# minicrypto is different: tls_api.c's picoquic_tls_api_init_providers()
+# calls picoquic_ptls_minicrypto_load() with no compile-time guard at all
+# (only a runtime flag check, TLS_API_INIT_FLAGS_NO_MINICRYPTO, which
+# defaults to unset). Excluding picoquic_ptls_minicrypto.c left that call
+# an undefined symbol at link time -- confirmed by the real build's own
+# linker error ("undefined reference to picoquic_ptls_minicrypto_load"),
+# not guessed. thirdparty/picoquic-godot-patches/0002-godot-fixes.patch
+# itself patches ech.c's own minicrypto.h include, confirming the Godot
+# fork this vendoring mirrors compiles minicrypto in too. mbedtls still
+# wins as the active provider: picoquic_tls_api_init_providers() registers
+# minicrypto first and mbedtls last, and "the latest registration wins"
+# per tls_api.c's own comment.
 list(FILTER PICOQUIC_CORE_SOURCES EXCLUDE REGEX ".*picoquic_ptls_openssl\\.c$")
 list(FILTER PICOQUIC_CORE_SOURCES EXCLUDE REGEX ".*picoquic_ptls_fusion\\.c$")
-list(FILTER PICOQUIC_CORE_SOURCES EXCLUDE REGEX ".*picoquic_ptls_minicrypto\\.c$")
 list(FILTER PICOQUIC_CORE_SOURCES EXCLUDE REGEX ".*winsockloop\\.c$")
 
 set(PICOTLS_SOURCES
@@ -29,11 +42,43 @@ set(PICOTLS_SOURCES
     ${PICOTLS_ROOT}/lib/asn1.c
 )
 
+# picoquic_ptls_minicrypto.c (kept in the build, see the exclusion-list
+# comment below) links against picotls's own minicrypto backend, which is
+# a separate library target (picotls-minicrypto) in picotls's own
+# CMakeLists.txt, not part of core picotls.c. Mirroring that file list
+# exactly here rather than guessing which subset is needed.
+set(PICOTLS_MINICRYPTO_SOURCES
+    ${PICOTLS_ROOT}/deps/micro-ecc/uECC.c
+    ${PICOTLS_ROOT}/deps/cifra/src/aes.c
+    ${PICOTLS_ROOT}/deps/cifra/src/blockwise.c
+    ${PICOTLS_ROOT}/deps/cifra/src/chacha20.c
+    ${PICOTLS_ROOT}/deps/cifra/src/chash.c
+    ${PICOTLS_ROOT}/deps/cifra/src/curve25519.c
+    ${PICOTLS_ROOT}/deps/cifra/src/drbg.c
+    ${PICOTLS_ROOT}/deps/cifra/src/hmac.c
+    ${PICOTLS_ROOT}/deps/cifra/src/gcm.c
+    ${PICOTLS_ROOT}/deps/cifra/src/gf128.c
+    ${PICOTLS_ROOT}/deps/cifra/src/modes.c
+    ${PICOTLS_ROOT}/deps/cifra/src/poly1305.c
+    ${PICOTLS_ROOT}/deps/cifra/src/sha256.c
+    ${PICOTLS_ROOT}/deps/cifra/src/sha512.c
+    ${PICOTLS_ROOT}/lib/cifra.c
+    ${PICOTLS_ROOT}/lib/cifra/x25519.c
+    ${PICOTLS_ROOT}/lib/cifra/chacha20.c
+    ${PICOTLS_ROOT}/lib/cifra/aes128.c
+    ${PICOTLS_ROOT}/lib/cifra/aes256.c
+    ${PICOTLS_ROOT}/lib/cifra/random.c
+    ${PICOTLS_ROOT}/lib/minicrypto-pem.c
+    ${PICOTLS_ROOT}/lib/uecc.c
+    ${PICOTLS_ROOT}/lib/ffx.c
+)
+
 add_library(picoquic_vendored STATIC
     ${PICOQUIC_CORE_SOURCES}
     ${PICOHTTP_SOURCES}
     ${PICOQUIC_MBEDTLS_SOURCES}
     ${PICOTLS_SOURCES}
+    ${PICOTLS_MINICRYPTO_SOURCES}
 )
 
 # BEFORE matters here: h2o's own CMakeLists.txt installs its bundled,
@@ -53,6 +98,16 @@ target_include_directories(picoquic_vendored BEFORE PUBLIC
     ${PICOQUIC_ROOT}/picohttp
     ${PICOQUIC_ROOT}/picoquic_mbedtls
     ${MBEDTLS_INCLUDE_DIRS}
+)
+
+# picotls-minicrypto's own include path, per picotls's CMakeLists.txt's
+# INCLUDE_DIRECTORIES() call -- cifra's headers use "ext/..." and
+# "bitops.h"-style relative includes that only resolve with these two
+# directories on the path, and deps/micro-ecc/uECC.h needs its own dir too.
+target_include_directories(picoquic_vendored PRIVATE
+    ${PICOTLS_ROOT}/deps/cifra/src/ext
+    ${PICOTLS_ROOT}/deps/cifra/src
+    ${PICOTLS_ROOT}/deps/micro-ecc
 )
 
 target_compile_definitions(picoquic_vendored PUBLIC
