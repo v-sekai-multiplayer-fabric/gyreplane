@@ -62,6 +62,13 @@ target_compile_definitions(picoquic_vendored PUBLIC
     DISABLE_DEBUG_PRINTF
 )
 
+# MBEDTLS_LIBRARIES (from pkg_check_modules) is just bare names
+# (-lmbedtls -lmbedcrypto -lmbedx509) -- the linker needs
+# MBEDTLS_LIBRARY_DIRS too (/opt/mbedtls/lib in CI), or it fails with
+# "cannot find -lmbedtls" even though the .so files exist, just not on
+# ld's default search path. Confirmed by reading the actual link error,
+# not guessed.
+target_link_directories(picoquic_vendored PUBLIC ${MBEDTLS_LIBRARY_DIRS})
 target_link_libraries(picoquic_vendored PUBLIC ${MBEDTLS_LIBRARIES})
 
 # NOTE: the three godot_patches/*.patch files (thirdparty/picoquic-godot-patches/)
