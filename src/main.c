@@ -57,8 +57,9 @@ static void *worker_main(void *arg)
 {
     thread_ctx_t *tctx = (thread_ctx_t *)arg;
 
-    /* TODO(task #11): bind the WebTransport/QUIC datagram listener here
-     * (pending the libh2o WebTransport spike), and drive a bare ZoneTick
+    /* TODO(task #11): call webtransport_server_init() (src/transport/,
+     * built on the vendored picoquic -- see cmake/picoquic.cmake) here,
+     * bridge its socket into this h2o_evloop, and drive a bare ZoneTick
      * (position += velocity * dt, no physics) off it per plan step 0. */
     while (tctx->running) {
         h2o_evloop_run(tctx->loop, INT32_MAX);

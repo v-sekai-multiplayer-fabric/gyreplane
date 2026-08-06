@@ -24,6 +24,19 @@ plus a bare `ZoneTick` (`position += velocity * dt`, no physics) — see
 - Event loop, worker pool, FDB async plumbing, SPSC ring: ported as-is from
   `h2o-bench-tpcc`'s `src/` (RFD 0005 actor-lite architecture, RFD 0011 async
   FDB callback chain).
+- **Transport is `picoquic` + `picotls`, not `h2o`'s own QUIC stack.**
+  `h2o` (pinned by `h2o-bench-tpcc`) has no WebTransport/datagram support at
+  all -- confirmed by searching its source tree. The Godot client's
+  `WebTransportPeer` (`V-Sekai-fire/multiplayer-fabric-build`,
+  `godot/modules/http3/`) is built on vendored `picoquic` + `picotls`, which
+  *does* have working WebTransport, datagrams, and MASQUE support
+  (`picohttp/webtransport.c`, `picoquictest/datagram_tests.c`,
+  `picohttp/picomask.c`). `thirdparty/picoquic` and `thirdparty/picotls` here
+  are git submodules pinned to the exact commits that fork vendors
+  (`790e973b`, `3b4d709f`), so client and server share one proven QUIC
+  stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`) and
+  `src/transport/webtransport_server.c` (not yet implemented -- the actual
+  wiring point for task #11).
 - Entity/migration/ghost/journal shape: modeled on the real (if
   never-yet-invoked) `FabricZone` C++ engine in
   `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.

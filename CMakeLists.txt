@@ -29,11 +29,14 @@ set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_FORTIFY_SOURCE=2")
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
 
+include(cmake/picoquic.cmake)
+
 file(GLOB_RECURSE HANDLER_SOURCES "src/handlers/*.c")
 file(GLOB SOURCES "src/*.c")
+file(GLOB TRANSPORT_SOURCES "src/transport/*.c")
 
-add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES})
+add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES})
 target_link_libraries(${PROJECT_NAME} ${COMMON_OPTIONS})
-target_link_libraries(${PROJECT_NAME} ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} m)
+target_link_libraries(${PROJECT_NAME} ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} picoquic_vendored m)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
