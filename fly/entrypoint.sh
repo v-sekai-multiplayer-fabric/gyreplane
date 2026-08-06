@@ -140,13 +140,27 @@ EOF
   (
     slot=0
     while true; do
-      dest="blobstore://${AWS_ACCESS_KEY_ID}@${TIGRIS_HOST}/zone-server-h2o-mud-backup-slot-${slot}?bucket=${TIGRIS_BUCKET}"
+      # region=... is required -- a real error found live against a
+      # real Tigris bucket: "Failed to get region from host or
+      # parameter in url, region is required for aws v4 signature".
+      # AWS_REGION is already one of flyctl storage create's own
+      # staged secrets ("auto" for Tigris), reused here rather than
+      # hardcoded.
+      dest="blobstore://${AWS_ACCESS_KEY_ID}@${TIGRIS_HOST}/zone-server-h2o-mud-backup-slot-${slot}?bucket=${TIGRIS_BUCKET}&region=${AWS_REGION}"
       fdbbackup delete -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" 2>/dev/null || true
-      if fdbbackup start -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" -w 2>&1 \
-        | tee -a "$LOG_ROOT/backup.log" >&2; then
+      # Real bug found live, worth recording: `fdbbackup start ... |
+      # tee ...` piped into `if` checks tee's own exit status, not
+      # fdbbackup's -- tee almost always succeeds, so this logged
+      # "committed" on every run even while fdbbackup itself was
+      # failing with the region error above. Redirecting straight to
+      # the log file instead of piping through tee checks fdbbackup's
+      # own real exit code.
+      if fdbbackup start -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" -w \
+        >>"$LOG_ROOT/backup.log" 2>&1; then
         echo "entrypoint: backup slot $slot committed to $dest" >&2
       else
-        echo "entrypoint: backup slot $slot failed, will retry next cycle" >&2
+        echo "entrypoint: backup slot $slot failed, will retry next cycle -- see $LOG_ROOT/backup.log" >&2
+        tail -5 "$LOG_ROOT/backup.log" >&2
       fi
       slot=$(((slot + 1) % BACKUP_SLOTS))
       sleep "$BACKUP_INTERVAL_SECONDS"
