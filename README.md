@@ -50,11 +50,21 @@ plus a bare `ZoneTick` (`position += velocity * dt`, no physics) — see
   little-endian, no floats on the wire), differentially tested against
   that repo's 64 Plausible-verified golden vectors
   (`test/unit/test_xr_grid_entity_packet.c` -- byte-identical round-trip,
-  not just field equality). Not yet wired into `zf_kv.h`'s
-  `zf_entity_val_t`, which still uses a float-double placeholder pending
-  that migration (position/velocity math changes from float `dt`
-  multiplication to fixed-tick integer micrometers). The `lean-rebac-core`
-  half (the `CMD_INSTANCE_ASSET` owner-only ReBAC check) is not started.
+  not just field equality) and now the real storage type in `zf_kv.h`'s
+  `zf_entity_val_t` (the float-double placeholder is gone). `zf_zonetick.c`
+  ticks in fixed-tick integer micrometers, matching the wire's actual
+  semantics (velocity is a per-tick displacement, not a continuous rate).
+  `src/gen/rebac.{c,h}` ports `lean-rebac-core`'s `Rebac/core/ReBAC.lean`
+  `rebacCheck` -- a pure predicate over `Relation`/`Action` ranks, tested
+  against the Lean source's own proved theorems (`rebac_empty_denied`,
+  `rebac_public_observe`, the owner-only `.modify` boundary). Not yet
+  wired into the transport layer -- the geometric-authority routing
+  ("which zone evaluates the check") it depends on is task #8/#9's
+  zone-authority work. `Rebac/core/NoGod.lean`, which `ReBAC.lean`
+  imports, turned out to be a much bigger find than task #13 alone: a
+  gossip-based, coordinator-free vector-clock consensus system for zone
+  authority/interest -- directly relevant to task #8's zone-authority and
+  entity-migration work, not yet acted on.
 - Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c)
   once the toolchain is wired in (task #3) — this process parses untrusted
   WebTransport input directly from clients.

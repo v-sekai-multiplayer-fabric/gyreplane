@@ -73,3 +73,10 @@ jobs:
           export PATH="/opt/filc/bin:$PATH"
           clang -Wall -Wextra -std=c11 test/unit/test_vel_to_um_per_tick.c -o /tmp/test_vel_to_um_per_tick
           /tmp/test_vel_to_um_per_tick
+
+      - name: Unit test -- ReBAC access check (task #13)
+        run: |
+          export PATH="/opt/filc/bin:$PATH"
+          clang -Wall -Wextra -std=c11 -Isrc/gen \
+            src/gen/rebac.c test/unit/test_rebac.c -o /tmp/test_rebac
+          /tmp/test_rebac
