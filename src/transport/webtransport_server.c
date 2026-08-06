@@ -91,23 +91,6 @@ static void flush_outbound(webtransport_server_t *server)
     timerfd_settime(server->timer_fd, 0, &its, NULL);
 }
 
-/* Task #11's original in-memory-only placeholder. Superseded by
- * zf_zonetick_run() below for anything with fdb_state set, but left in
- * place (unused when fdb_state != NULL) as a no-FDB fallback / reference
- * for what the FDB version replaced. */
-static void zonetick_step(webtransport_server_t *server, double dt)
-{
-    for (int i = 0; i < ZONETICK_MAX_ENTITIES; i++) {
-        zonetick_entity_t *e = &server->entities[i];
-        if (!e->active) {
-            continue;
-        }
-        e->cx += e->vx * dt;
-        e->cy += e->vy * dt;
-        e->cz += e->vz * dt;
-    }
-}
-
 static void on_zonetick_done(void *ctx, bool ok)
 {
     webtransport_server_t *server = (webtransport_server_t *)ctx;
@@ -143,19 +126,37 @@ static void zonetick_fdb_this_zone(webtransport_server_t *server)
  * picohttp_callback_post_datagram -- i.e. a real negotiated WebTransport
  * session datagram on ZONE_WT_PATH, not a raw QUIC datagram on any
  * connection (that was task #11's placeholder scope; task #12 replaced
- * it). One fixed tick for this process's one zone per datagram (matches
- * godot-loop-slice's TICK_HZ=30 cadence assumption). The in-memory
- * zonetick_step() fallback is used only when fdb_state is NULL (still
- * float-dt based; never migrated off that shape since the FDB path
- * superseded it before that would have mattered). */
+ * it). Ticks this process's one zone immediately on receipt, in
+ * addition to the independent ZONE_TICK_HZ timer below -- an incoming
+ * datagram usually means a client is actively interacting, worth
+ * reflecting without waiting for the next fixed-rate tick. zone_in_flight
+ * means this is a no-op if a tick from either source is already running,
+ * never two at once. task #11's original in-memory-only fdb_state==NULL
+ * fallback is gone: fdb_state is always set in the real server (main.c
+ * always calls fdb_global_init), so that branch was unreachable dead
+ * code, confirmed by reading main.c directly, not assumed. */
 static void on_wt_datagram(void *app_ctx)
 {
     webtransport_server_t *server = (webtransport_server_t *)app_ctx;
-    if (server->fdb_state != NULL) {
-        zonetick_fdb_this_zone(server);
-    } else {
-        zonetick_step(server, 1.0 / 30.0);
+    zonetick_fdb_this_zone(server);
+}
+
+/* The independent ZONE_TICK_HZ driver (task #17's parity check against
+ * the original Godot FabricZone's own free-running PBVH_SIM_TICK_HZ=20
+ * tick). Ticks every entity in this zone on a fixed period regardless
+ * of client datagram traffic -- see zonetick_timer_fd's own header
+ * comment in webtransport_server.h for why this needs a timer separate
+ * from picoquic's own protocol timer. */
+static void on_zonetick_timer_fire(h2o_socket_t *sock, const char *err)
+{
+    webtransport_server_t *server = (webtransport_server_t *)sock->data;
+    uint64_t expirations;
+
+    if (err != NULL) {
+        return;
     }
+    (void)read(server->zonetick_timer_fd, &expirations, sizeof(expirations));
+    zonetick_fdb_this_zone(server);
 }
 
 static void on_udp_readable(h2o_socket_t *sock, const char *err)
@@ -291,10 +292,36 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
     server->timer_sock->data = server;
     h2o_socket_read_start(server->timer_sock, on_timer_fire);
 
+    /* ZONE_TICK_HZ driver -- unlike timer_fd above (single-shot, rearmed
+     * to a different interval every fire by picoquic's own protocol
+     * logic), this one is periodic from the start: it_interval, not just
+     * it_value, so the kernel re-arms it on a fixed schedule without any
+     * rearm call on our side. */
+    server->zonetick_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    if (server->zonetick_timer_fd < 0) {
+        fprintf(stderr, "webtransport_server: zonetick timerfd_create failed: %s\n", strerror(errno));
+        picoquic_free(server->quic);
+        close(server->timer_fd);
+        close(server->udp_fd);
+        return -1;
+    }
+    {
+        int64_t period_us = 1000000 / ZONE_TICK_HZ;
+        struct itimerspec its = {0};
+        its.it_value.tv_sec = period_us / 1000000;
+        its.it_value.tv_nsec = (period_us % 1000000) * 1000;
+        its.it_interval = its.it_value;
+        timerfd_settime(server->zonetick_timer_fd, 0, &its, NULL);
+    }
+    server->zonetick_timer_sock = h2o_evloop_socket_create(loop, server->zonetick_timer_fd, H2O_SOCKET_FLAG_DONT_READ);
+    server->zonetick_timer_sock->data = server;
+    h2o_socket_read_start(server->zonetick_timer_sock, on_zonetick_timer_fire);
+
     fprintf(stderr, "webtransport_server: WebTransport bound on UDP %d, path %s, "
-                     "zone %u (TLS %s)\n",
+                     "zone %u (TLS %s), ZoneTick at %d Hz\n",
             port, ZONE_WT_PATH, server->z_id,
-            (cert_file && key_file) ? "cert/key loaded" : "cert/key NULL/NULL -- unauthenticated smoke-test mode");
+            (cert_file && key_file) ? "cert/key loaded" : "cert/key NULL/NULL -- unauthenticated smoke-test mode",
+            ZONE_TICK_HZ);
 
     return 0;
 }
@@ -309,11 +336,18 @@ void webtransport_server_close(webtransport_server_t *server)
         h2o_socket_read_stop(server->timer_sock);
         h2o_socket_close(server->timer_sock);
     }
+    if (server->zonetick_timer_sock != NULL) {
+        h2o_socket_read_stop(server->zonetick_timer_sock);
+        h2o_socket_close(server->zonetick_timer_sock);
+    }
     if (server->quic != NULL) {
         picoquic_free(server->quic);
     }
     zone_wt_free_context(NULL, server->wt_ctx);
     if (server->timer_fd >= 0) {
         close(server->timer_fd);
+    }
+    if (server->zonetick_timer_fd >= 0) {
+        close(server->zonetick_timer_fd);
     }
 }
