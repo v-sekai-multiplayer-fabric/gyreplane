@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Middleham</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    background: #0c0c10; color: #d8d8d0; font-family: ui-monospace, monospace;
+    max-width: 720px; margin: 0 auto; padding: 1rem;
+  }
+  h1 { font-size: 1.1rem; color: #8fd; margin: 0 0 0.5rem 0; }
+  #log { border: 1px solid #333; padding: 0.75rem; height: 60vh; overflow-y: auto;
+         white-space: pre-wrap; line-height: 1.4; background: #101015; }
+  #log .turn { margin-bottom: 0.75rem; }
+  #log .meta { color: #666; font-size: 0.85em; }
+  #log .invalid { color: #d66; }
+  form { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+  input { flex: 1; background: #101015; color: #d8d8d0; border: 1px solid #333;
+          padding: 0.5rem; font-family: inherit; }
+  button { background: #223; color: #8fd; border: 1px solid #333; padding: 0.5rem 1rem;
+           font-family: inherit; cursor: pointer; }
+  #hint { color: #666; font-size: 0.85em; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<h1>Middleham</h1>
+<div id="log"></div>
+<form id="commandForm">
+  <input id="commandInput" autocomplete="off" placeholder="look / go north / talk captain hello / examine token" autofocus>
+  <button type="submit">Send</button>
+</form>
+<div id="hint">
+  Commands: look, go &lt;direction&gt;, talk &lt;npc&gt; &lt;message&gt;, examine &lt;thing&gt;, take &lt;item&gt;, give &lt;item&gt; &lt;npc&gt;, use &lt;item&gt;.
+  No account needed -- this browser's own session id is kept in localStorage.
+</div>
+<script src="mud.js"></script>
+</body>
+</html>

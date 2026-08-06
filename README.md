@@ -17,9 +17,13 @@ flag, not a hardcoded value.
 
 A zone fabric means multiple processes. Each process runs one zone (1
 process : 1 zone). This matches `zone-server/AGENTS.md`'s deployment
-shape: one UDP port per zone instance, up to 100 concurrent zones. Entity
-and prop physics (MuJoCo) and avatar IK (`sinew-mocap/solve`'s
-`Align.lean`) are both wired and tested.
+shape: one UDP port per zone instance, up to 100 concurrent zones.
+Avatar IK (`sinew-mocap/solve`'s `Align.lean`) is wired and tested.
+Entity and prop physics used MuJoCo for a while; that dependency is
+dropped now in favor of Godot's own Jolt physics (see
+`docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`'s Revision 3).
+The vendored MuJoCo build and its `mj_physics.c` wiring moved to
+`v-sekai-multiplayer-fabric/mujoco-riscv64`.
 
 Three items are not done yet:
 - The TLS cert and key are still `NULL`/`NULL`, so the server is
@@ -76,7 +80,7 @@ zones.
   *does* have working WebTransport, datagrams, and MASQUE support
   (`picohttp/webtransport.c`, `picoquictest/datagram_tests.c`,
   `picohttp/picomask.c`). `thirdparty/picoquic` and `thirdparty/picotls` here
-  are git submodules pinned to the exact commits that fork vendors
+  are git subtrees checked in at the exact commits that fork vendors
   (`790e973b`, `3b4d709f`). This way, client and server share one proven
   QUIC stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`),
   `src/transport/webtransport_server.c` (the QUIC transport bridge into
@@ -85,10 +89,12 @@ zones.
 - Entity, migration, ghost, and journal shape: modeled on the real (if
   never-yet-invoked) `FabricZone` C++ engine in
   `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.
-- Physics: [MuJoCo](https://github.com/google-deepmind/mujoco) 3.11.0
-  (`src/physics/`) for entity and prop contact physics. Examples of this:
-  collisions, joints, forces. Its own header confirms MuJoCo has no
-  first-party IK, only Jacobian primitives. So MuJoCo is not the IK layer.
+- Physics: used [MuJoCo](https://github.com/google-deepmind/mujoco) 3.11.0
+  for entity and prop contact physics (collisions, joints, forces) for a
+  while. Dropped in favor of Godot's own Jolt physics -- see
+  `docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`'s Revision 3.
+  The vendored build moved to
+  [`v-sekai-multiplayer-fabric/mujoco-riscv64`](https://github.com/v-sekai-multiplayer-fabric/mujoco-riscv64).
 - Avatar IK and posing: [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)'s
   own `Align.lean` (Kabsch-style rotation fitting, in `src/gen/sinew_align.c`),
   not `kevinzakka/mink`'s QP-based approach. The team evaluated `mink` and
@@ -138,7 +144,6 @@ critical path, and so on) once ported.
 ## Build
 
 ```sh
-git submodule update --init --recursive
 cmake -B build && cmake --build build
 ```
 
@@ -152,8 +157,9 @@ This build also requires OpenSSL and the FoundationDB C client
 It requires `mbedtls` too, built from source, not the system package.
 Apt's `libmbedtls-dev` does not include `mbedtls_config.h`.
 
-It also requires the vendored submodules (`picoquic`, `picotls`, `mujoco`), built
-via `cmake/picoquic.cmake` / `cmake/mujoco.cmake`.
+It also requires the vendored `thirdparty/` git subtrees (`picoquic`,
+`picotls`, `QCBOR`), checked in directly (no separate init/fetch step),
+built via `cmake/picoquic.cmake` / `cmake/qcbor.cmake`.
 `.github/workflows/real-build.yml` runs this full build in CI. Check that
 workflow's latest run for current status before assuming this build is
 green.

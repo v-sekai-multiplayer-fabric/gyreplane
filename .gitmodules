@@ -1,9 +1,0 @@
-[submodule "thirdparty/picoquic"]
-	path = thirdparty/picoquic
-	url = https://github.com/private-octopus/picoquic.git
-[submodule "thirdparty/picotls"]
-	path = thirdparty/picotls
-	url = https://github.com/h2o/picotls.git
-[submodule "thirdparty/mujoco"]
-	path = thirdparty/mujoco
-	url = https://github.com/google-deepmind/mujoco.git

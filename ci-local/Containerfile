@@ -57,10 +57,10 @@ RUN curl -LSs "https://github.com/apple/foundationdb/releases/download/${FDB_VER
     rm -f /tmp/fdb-*.deb
 
 WORKDIR /work
-# Build context is the checked-out repo working tree, submodules already
-# initialized locally (git submodule status confirmed mujoco, picoquic,
-# picotls all present before this file was written) -- no network
-# submodule fetch needed inside the image.
+# Build context is the checked-out repo working tree. thirdparty/
+# deps (picoquic, picotls, QCBOR) are real git subtree content
+# checked directly into this repo, not submodules -- nothing to
+# initialize or fetch separately before this COPY.
 COPY . /work
 
 RUN cmake -B build -DCMAKE_PREFIX_PATH="/opt/h2o" -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -70,8 +70,7 @@ RUN cmake -B build -DCMAKE_PREFIX_PATH="/opt/h2o" -DCMAKE_BUILD_TYPE=RelWithDebI
 RUN cmake --build build -j
 
 # Same per-test recipes as real-build.yml's own step, verbatim,
-# including the build/lib mujoco path fix and the "no recipe -> fail,
-# don't skip silently" rule.
+# including the "no recipe -> fail, don't skip silently" rule.
 RUN set -e; \
     for t in test/unit/test_*.c; do \
       name=$(basename "$t" .c); \
@@ -89,11 +88,6 @@ RUN set -e; \
             src/zf_kv.c src/gen/xr_grid_entity_packet.c "$t" -o "/tmp/$name" ;; \
         test_sinew_align) \
           clang -Wall -Wextra -std=c11 -Isrc/gen -lm src/gen/sinew_align.c "$t" -o "/tmp/$name" ;; \
-        test_mj_physics_freefall) \
-          clang -Wall -Wextra -std=c11 -Isrc/physics -Ithirdparty/mujoco/include \
-            src/physics/mj_physics.c "$t" \
-            -Lbuild/lib -lmujoco -lm -o "/tmp/$name"; \
-          export LD_LIBRARY_PATH="$PWD/build/lib:$LD_LIBRARY_PATH" ;; \
         *) \
           echo "no build recipe for $name -- add one rather than skip silently"; \
           exit 1 ;; \

@@ -76,8 +76,8 @@ jobs:
 
       # This is the real link this whole workflow exists to prove out --
       # expect and fix whatever surfaces here, per the plan's own risk
-      # list: MuJoCo's Threads dependency, picotls/mujoco/FDB transitive
-      # symbol collisions, FDB API version mismatches.
+      # list: picotls/FDB transitive symbol collisions, FDB API version
+      # mismatches.
       - name: Build zone-server-h2o
         run: cmake --build build -j
 

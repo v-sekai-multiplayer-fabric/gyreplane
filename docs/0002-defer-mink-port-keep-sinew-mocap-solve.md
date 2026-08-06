@@ -89,3 +89,14 @@ Lie group module, multi-task weighting) stays deferred and unrelated to
 task #16's now-completed scope -- it would only become relevant if a
 genuinely different, `mink`-shaped IK need arises later, not as a
 continuation of `Align.lean`'s already-sufficient algorithm.
+
+## Revision 3 (current)
+
+`thirdparty/mujoco` (Context's own line 13 reference, task #8's
+entity/prop contact physics) is dropped, per direct instruction --
+Godot's own Jolt physics already covers that role, so a second vendored
+physics engine in this process was redundant. Nothing in this doc's
+own analysis changes: `sinew-mocap/solve`/`Align.lean` never depended
+on MuJoCo, as Revision 2 already established. Task #8 itself needs a
+real replacement plan for entity/prop contact physics against Jolt,
+tracked separately, not assumed solved by this doc.

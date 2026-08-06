@@ -1,2 +1,7 @@
 certs/
 build_tools/
+
+# mud prototype build artifacts
+mud/orchestrator/mud-sandbox-orchestrator
+mud/guest/*.elf
+mud/guest/*.o

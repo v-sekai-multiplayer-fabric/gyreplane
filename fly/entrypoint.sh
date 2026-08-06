@@ -99,6 +99,59 @@ for i in $(seq 1 15); do
   sleep 1
 done
 
+# Rotating FDB -> Fly Tigris (S3-compatible) backup, real fdbbackup,
+# not a hand-rolled snapshot copy. Only runs if Tigris credentials are
+# actually set (flyctl secrets set TIGRIS_ACCESS_KEY_ID/
+# TIGRIS_SECRET_ACCESS_KEY, after `flyctl storage create`) -- silently
+# skipped otherwise, matching every other optional piece of this
+# entrypoint (TLS_CERT/TLS_KEY already work the same way in main.c).
+#
+# Rotation, not unbounded growth: BACKUP_SLOTS destinations
+# (zone-server-h2o-mud-backup-slot-0 .. slot-(N-1)) are reused in a
+# ring. Before writing a new slot, its previous contents are removed
+# with a real `fdbbackup delete`, so the bucket never holds more than
+# BACKUP_SLOTS backups' worth of data no matter how long the machine
+# runs -- confirmed against fdbbackup's own `delete` action (fdbbackup
+# --help), not assumed.
+#
+# `-w` (wait) blocks until the one-shot snapshot is restorable; without
+# `-z/--no-stop-when-done` fdbbackup stops itself once that happens --
+# real one-shot-snapshot behavior confirmed via fdbbackup's own start
+# --help text, not a guess. The secret key is kept out of argv/the
+# blobstore URL via --blob-credentials's own documented JSON file
+# form ({"accounts":{"user@host":{"secret":"..."}}}), not embedded in
+# the URL where `ps` could see it.
+if [ -n "$TIGRIS_ACCESS_KEY_ID" ] && [ -n "$TIGRIS_SECRET_ACCESS_KEY" ]; then
+  BACKUP_SLOTS=${BACKUP_SLOTS:-4}
+  BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-21600} # 4x/day
+  TIGRIS_HOST=${TIGRIS_HOST:-fly.storage.tigris.dev}
+  TIGRIS_BUCKET=${TIGRIS_BUCKET:-zone-server-h2o-mud}
+  BLOB_CREDS_FILE="$TLS_DIR/tigris-blob-credentials.json"
+  cat >"$BLOB_CREDS_FILE" <<EOF
+{"accounts":{"${TIGRIS_ACCESS_KEY_ID}@${TIGRIS_HOST}":{"secret":"${TIGRIS_SECRET_ACCESS_KEY}"}}}
+EOF
+  chmod 600 "$BLOB_CREDS_FILE"
+
+  (
+    slot=0
+    while true; do
+      dest="blobstore://${TIGRIS_ACCESS_KEY_ID}@${TIGRIS_HOST}/zone-server-h2o-mud-backup-slot-${slot}?bucket=${TIGRIS_BUCKET}"
+      fdbbackup delete -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" 2>/dev/null || true
+      if fdbbackup start -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" -w 2>&1 \
+        | tee -a "$LOG_ROOT/backup.log" >&2; then
+        echo "entrypoint: backup slot $slot committed to $dest" >&2
+      else
+        echo "entrypoint: backup slot $slot failed, will retry next cycle" >&2
+      fi
+      slot=$(((slot + 1) % BACKUP_SLOTS))
+      sleep "$BACKUP_INTERVAL_SECONDS"
+    done
+  ) &
+  echo "entrypoint: started rotating FDB backup ($BACKUP_SLOTS slots, every ${BACKUP_INTERVAL_SECONDS}s, bucket=$TIGRIS_BUCKET)" >&2
+else
+  echo "entrypoint: TIGRIS_ACCESS_KEY_ID/TIGRIS_SECRET_ACCESS_KEY not set, skipping FDB backup" >&2
+fi
+
 # Zone count: 357 aggregate commits/sec (this same 8-process FDB
 # topology's own measured ceiling, from the earlier local 16-zone
 # test) divided by the 64 Hz per-zone target is ~5.6 -- 5 zones is the

@@ -37,6 +37,7 @@
 
 #include "error.h"
 #include "global_data.h"
+#include "mud/mud_http.h"
 #include "transport/webtransport_server.h"
 
 #define DEFAULT_PORT 7443 /* matches zone-server's UDP 7443, per zone.ex's x-webtransport spec */
@@ -121,6 +122,7 @@ typedef struct {
     const char *cert_file;
     const char *key_file;
     webtransport_server_t wt_server;
+    h2o_hostconf_t *hostconf; /* for the MUD HTTP listener, thread 0 only */
 } thread_ctx_t;
 
 static void usage(const char *prog)
@@ -154,6 +156,18 @@ static void *worker_main(void *arg)
                                       &tctx->fdb_state, tctx->z_id) != 0) {
             fprintf(stderr, "zone-server-h2o: WebTransport transport init failed on port %d\n",
                     tctx->port);
+        }
+
+        /* MUD prototype's HTTP surface -- optional, only if
+         * MUD_HTTP_PORT is set (main()'s own gate below), matching how
+         * TLS_CERT/TLS_KEY are also optional. Thread 0 only, same rule
+         * as the QUIC/UDP transport above. */
+        const char *mud_http_port_env = getenv("MUD_HTTP_PORT");
+        if (mud_http_port_env != NULL && tctx->hostconf != NULL) {
+            int mud_port = atoi(mud_http_port_env);
+            if (mud_http_listen(&tctx->h2o_ctx, tctx->loop, mud_port, tctx->cert_file, tctx->key_file) != 0) {
+                fprintf(stderr, "zone-server-h2o: MUD HTTP listener init failed on port %d\n", mud_port);
+            }
         }
     }
 
@@ -241,7 +255,23 @@ int main(int argc, char *argv[])
      * repo was a build/link/unit-test pass, never an actual process
      * start, so this had never been exercised before. No path/handler is
      * registered under it since nothing serves HTTP through this host. */
-    h2o_config_register_host(&config.h2o_config, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+    h2o_hostconf_t *hostconf =
+        h2o_config_register_host(&config.h2o_config, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+
+    /* MUD prototype: optional, wired only if all three env vars are
+     * set (a real Fly deploy or local test sets them; a plain
+     * zone-server-h2o run without them behaves exactly as before this
+     * feature existed -- no path registered, no listener bound,
+     * matching TLS_CERT/TLS_KEY's own already-established opt-in
+     * pattern). MUD_HTTP_PORT itself is read again in worker_main(),
+     * this block only registers the paths on the shared hostconf. */
+    const char *mud_docroot = getenv("MUD_WEB_DOCROOT");
+    const char *mud_orchestrator = getenv("MUD_ORCHESTRATOR_PATH");
+    const char *mud_guest_elf = getenv("MUD_GUEST_ELF_PATH");
+    if (mud_docroot != NULL && mud_orchestrator != NULL && mud_guest_elf != NULL) {
+        mud_http_register(hostconf, mud_docroot, mud_orchestrator, mud_guest_elf);
+        fprintf(stderr, "zone-server-h2o: MUD HTTP paths registered (docroot=%s)\n", mud_docroot);
+    }
 
     thread_ctx_t *threads = calloc(config.worker_count, sizeof(*threads));
 
@@ -253,6 +283,7 @@ int main(int argc, char *argv[])
         t->port = port;
         t->z_id = (uint32_t)z_id;
         t->cert_file = cert_file;
+        t->hostconf = hostconf;
         t->key_file = key_file;
         t->loop = h2o_evloop_create();
 

@@ -17,6 +17,13 @@ primary_region = "iad"
   ZONE_PORT         = "7443"
   FDB_PROCESS_COUNT = "1"
   ZONE_COUNT        = "1"
+  # BACKUP_SLOTS / BACKUP_INTERVAL_SECONDS: real defaults live in
+  # fly/entrypoint.sh (4 slots, 21600s = 4x/day), overridable here.
+  # TIGRIS_ACCESS_KEY_ID / TIGRIS_SECRET_ACCESS_KEY are secrets, not
+  # env vars -- set once via `flyctl storage create` (mints a real
+  # Tigris bucket + credentials) then `flyctl secrets set
+  # TIGRIS_ACCESS_KEY_ID=... TIGRIS_SECRET_ACCESS_KEY=...`, not set
+  # here. Backups are skipped entirely (see entrypoint.sh) if unset.
 
 [[services]]
   internal_port        = 7443
