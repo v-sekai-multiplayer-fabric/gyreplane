@@ -1,0 +1,75 @@
+app            = "zone-server-h2o-test"
+primary_region = "iad"
+
+# Throwaway test app -- deployed to prove the best-measured topology
+# (8-process FDB, real log/proxy/resolver roles, 5 concurrent zones,
+# mutual TLS between zone-server-h2o and FDB) actually works on real
+# Fly.io infrastructure, then torn down. Mirrors multiplayer-fabric-zone
+# (the Godot zone-server)'s own real fly.toml shape (services/vm
+# blocks fetched and read directly, not guessed).
+
+[build]
+  dockerfile = "fly/Containerfile"
+
+[env]
+  ZONE_PORT         = "7443"
+  FDB_PROCESS_COUNT = "8"
+  ZONE_COUNT        = "5"
+
+# UDP 7443-7447: one port per zone (zone-server/AGENTS.md's own
+# "one UDP port per zone instance" shape) -- dedicated IP, no port
+# remapping, same reason multiplayer-fabric-zone's own fly.toml gives:
+# Fly passes UDP without DNAT, so the app must bind the same port
+# clients connect to.
+[[services]]
+  internal_port        = 7443
+  protocol             = "udp"
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 7443
+
+[[services]]
+  internal_port        = 7444
+  protocol             = "udp"
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 7444
+
+[[services]]
+  internal_port        = 7445
+  protocol             = "udp"
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 7445
+
+[[services]]
+  internal_port        = 7446
+  protocol             = "udp"
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 7446
+
+[[services]]
+  internal_port        = 7447
+  protocol             = "udp"
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 7447
+
+# 8 FDB processes + 5 zone-server-h2o processes need real headroom --
+# sized up from multiplayer-fabric-zone's own 512mb/1 shared cpu
+# (a single Godot process) accordingly.
+[[vm]]
+  memory   = "4gb"
+  cpu_kind = "shared"
+  cpus     = 4
