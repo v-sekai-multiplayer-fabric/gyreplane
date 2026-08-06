@@ -178,6 +178,21 @@ if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
 EOF
   chmod 600 "$BLOB_CREDS_FILE"
 
+  # backup_agent (/usr/lib/foundationdb/backup_agent/backup_agent,
+  # part of the foundationdb-server package already installed) is a
+  # real, separate daemon FDB's own backup system needs running --
+  # fdbbackup start only submits the backup job into FDB's system
+  # keyspace, the agent is what actually reads the mutation log and
+  # writes range/log files to the destination. Never started before
+  # this line, a real gap found live (`which backup_agent` returned
+  # nothing; `ps aux` showed none running) while diagnosing the
+  # backup loop below. Needed regardless of the still-open
+  # "Operation timed out" issue documented below -- without this,
+  # even a backup that got past container creation would never
+  # actually complete.
+  /usr/lib/foundationdb/backup_agent/backup_agent -C "$CLUSTER_FILE" --logdir "$LOG_ROOT" &
+  echo "entrypoint: started backup_agent" >&2
+
   (
     slot=0
     while true; do
