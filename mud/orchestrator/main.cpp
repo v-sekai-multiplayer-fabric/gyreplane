@@ -84,27 +84,23 @@ struct MudSandbox {
         machine.setup_linux(std::vector<std::string>{"mud_guest"});
         /* Run the guest's own crt/libc startup + its trivial main() to
          * completion once, matching rvlinux's own machine.simulate()
-         * step before any vmcall(). */
-        try {
-            machine.simulate(60'000'000ULL);
-        } catch (const std::exception &e) {
-            fprintf(stderr, "mud-sandbox-orchestrator: guest boot failed: %s\n", e.what());
-            exit(1);
-        }
+         * step before any vmcall(). libriscv reports a guest trap/crash
+         * by throwing -- this project's own convention is no
+         * try/catch anywhere (main()'s own std::set_terminate handler
+         * is what turns that into a clean diagnostic instead). */
+        machine.simulate(60'000'000ULL);
         out_buffer_addr = machine.memory.resolve_address("g_mud_out_buffer");
     }
 
     /* Calls a guest vmcall(name, cbor_in) -> length, then copies
-     * length bytes back from g_mud_out_buffer. Returns false on a
-     * guest-reported error (negative return value). */
+     * length bytes back from g_mud_out_buffer. A guest-side crash
+     * during vmcall() is not caught here either, same reasoning as
+     * the constructor above -- it terminates the orchestrator
+     * process, which mud_session.c's own spawn_orchestrator() already
+     * treats as "this session's sandbox died" (the pipe read/write
+     * fails, the session is torn down), not a silent hang. */
     bool call(const char *func_name, const std::vector<uint8_t> &cbor_in, std::vector<uint8_t> &cbor_out) {
-        long n;
-        try {
-            n = (long)machine.vmcall(func_name, cbor_in, cbor_in.size());
-        } catch (const std::exception &e) {
-            fprintf(stderr, "mud-sandbox-orchestrator: vmcall(%s) failed: %s\n", func_name, e.what());
-            return false;
-        }
+        long n = (long)machine.vmcall(func_name, cbor_in, cbor_in.size());
         if (n < 0) {
             return false;
         }
@@ -115,6 +111,18 @@ struct MudSandbox {
 };
 
 int main(int argc, char **argv) {
+    /* This project's own convention is no try/catch anywhere.
+     * libriscv reports a guest trap/crash by throwing (MudSandbox's
+     * own comments above explain why that is not caught locally), so
+     * an uncaught exception here is real, expected behavior on a
+     * guest crash, not a bug -- it terminates the process, which
+     * mud_session.c's own spawn_orchestrator() already treats as
+     * "this session's sandbox died." Extracting the exception's own
+     * what() message would need a catch block to hold it, which this
+     * file does not have anywhere; the C++ runtime's own default
+     * terminate handler already prints the exception's type and
+     * message to stderr on its own (confirmed real libstdc++
+     * behavior), so nothing custom is installed here. */
     if (argc < 2) {
         fprintf(stderr, "usage: %s <guest-elf-path>\n", argv[0]);
         return 1;

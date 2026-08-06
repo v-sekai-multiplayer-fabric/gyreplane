@@ -1,5 +1,6 @@
 #include "mud_http.h"
 #include "mud_cbor.h"
+#include "mud_kv.h"
 #include "mud_session.h"
 #include "utility.h"
 
@@ -20,6 +21,53 @@
  * on_mud_command() -- defined first, matching this file's original
  * top-to-bottom handler order -- needs to call it too. */
 static void sse_push(const char *session_id, const char *text, size_t len);
+
+/* ---------------------------------------------------------------------
+ * Real FDB durability for MUD turns. Set once via mud_http_set_fdb_state()
+ * (main.c's own worker_main(), thread 0 only -- see mud_http.h). NULL
+ * (never set) means every write/read below is a real, silent no-op,
+ * matching every other optional feature in this file.
+ * ------------------------------------------------------------------- */
+static fdb_thread_state_t *g_fdb_state = NULL;
+
+void mud_http_set_fdb_state(fdb_thread_state_t *state) { g_fdb_state = state; }
+
+typedef struct {
+    char session_id[64];
+    uint32_t turn;
+} mud_turn_write_ctx_t;
+
+static void on_mud_turn_write_commit(FDBFuture *future, void *arg) {
+    mud_turn_write_ctx_t *ctx = (mud_turn_write_ctx_t *)arg;
+    fdb_error_t err = fdb_future_get_error(future);
+    if (err) {
+        fprintf(stderr, "mud_http: FDB write failed for session %s turn %u: %s\n",
+                ctx->session_id, ctx->turn, fdb_get_error(err));
+    }
+    fdb_future_destroy(future);
+    free(ctx);
+}
+
+/* Fire-and-forget: one blind write per turn, a fresh key every time
+ * (turn number is part of the key), so there is no real read-modify-
+ * write conflict to retry on -- unlike zf_zonetick.c's own
+ * range-read-then-write pattern, which does need
+ * fdb_handle_error()'s retry loop. */
+static void mud_kv_write_turn_async(const char *session_id, uint32_t turn, const char *narration, size_t narration_len) {
+    if (g_fdb_state == NULL) return;
+    FDBTransaction *tr;
+    if (fdb_create_transaction(g_fdb_state, &tr) != 0) return;
+    uint8_t key[128];
+    size_t key_len = mud_kv_turn_key(key, session_id, strlen(session_id), turn);
+    fdb_sync_set(tr, key, (int)key_len, (const uint8_t *)narration, (int)narration_len);
+    mud_turn_write_ctx_t *ctx = (mud_turn_write_ctx_t *)malloc(sizeof(*ctx));
+    snprintf(ctx->session_id, sizeof(ctx->session_id), "%s", session_id);
+    ctx->turn = turn;
+    if (fdb_async_commit(g_fdb_state, tr, on_mud_turn_write_commit, ctx) != 0) {
+        fdb_transaction_destroy(tr);
+        free(ctx);
+    }
+}
 
 /* ---------------------------------------------------------------------
  * POST /api/mud/command body parsing: {"session_id", "command",
@@ -204,6 +252,8 @@ static int on_mud_command(h2o_handler_t *self, h2o_req_t *req) {
     const uint8_t *narration = mud_cbor_map_get_str(result, result_len, "narration", &narration_len);
     if (narration != NULL) {
         sse_push(parsed.session_id, (const char *)narration, narration_len);
+        int64_t turn = mud_cbor_map_get_int(result, result_len, "turn", 0);
+        mud_kv_write_turn_async(parsed.session_id, (uint32_t)turn, (const char *)narration, narration_len);
     }
     free(result);
 
@@ -360,6 +410,118 @@ static int on_mud_stream(h2o_handler_t *self, h2o_req_t *req) {
 }
 
 /* ---------------------------------------------------------------------
+ * GET /api/mud/history?session_id=... -- a real async FDB range read,
+ * following zf_zonetick.c's own zt_start_range_read/zt_on_range_read
+ * pattern (fdb_create_transaction -> fdb_async_get_range -> parse via
+ * fdb_future_get_keyvalue_array), not a synchronous read forced onto
+ * h2o's single-threaded evloop. The handler returns 0 without calling
+ * h2o_start_response() at all -- a real, legal deferred-response h2o
+ * handler, matching how on_mud_stream() above never blocks either.
+ * The response itself is sent once the FDB future resolves.
+ * ------------------------------------------------------------------- */
+
+typedef struct {
+    h2o_req_t *req;
+    FDBTransaction *tr;
+    char session_id[64];
+} mud_history_ctx_t;
+
+static void on_mud_history_range_read(FDBFuture *future, void *arg) {
+    mud_history_ctx_t *ctx = (mud_history_ctx_t *)arg;
+    h2o_req_t *req = ctx->req;
+
+    fdb_error_t err = fdb_future_get_error(future);
+    if (err) {
+        fdb_future_destroy(future);
+        fdb_transaction_destroy(ctx->tr);
+        send_json_error(req, 502, fdb_get_error(err));
+        free(ctx);
+        return;
+    }
+
+    FDBKeyValue const *kvs;
+    int count;
+    fdb_bool_t more;
+    err = fdb_future_get_keyvalue_array(future, &kvs, &count, &more);
+    if (err) {
+        fdb_future_destroy(future);
+        fdb_transaction_destroy(ctx->tr);
+        send_json_error(req, 502, "failed to parse history range");
+        free(ctx);
+        return;
+    }
+
+    /* Build a real JSON array of narration strings, oldest first (the
+     * range scan already returns them in big-endian-turn key order,
+     * per mud_kv_turn_key()'s own layout). */
+    yajl_gen gen = yajl_gen_alloc(NULL);
+    yajl_gen_array_open(gen);
+    for (int i = 0; i < count; i++) {
+        yajl_gen_string(gen, kvs[i].value, (size_t)kvs[i].value_length);
+    }
+    yajl_gen_array_close(gen);
+    const unsigned char *buf;
+    size_t buf_len;
+    yajl_gen_get_buf(gen, &buf, &buf_len);
+    h2o_iovec_t json = h2o_strdup(&req->pool, (const char *)buf, buf_len);
+    yajl_gen_free(gen);
+
+    fdb_future_destroy(future);
+    fdb_transaction_destroy(ctx->tr);
+    free(ctx);
+
+    static h2o_generator_t generator = {NULL, NULL};
+    req->res.status = 200;
+    req->res.reason = "OK";
+    h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_CONTENT_TYPE, NULL, H2O_STRLIT("application/json"));
+    h2o_start_response(req, &generator);
+    h2o_send(req, &json, 1, H2O_SEND_STATE_FINAL);
+}
+
+static int on_mud_history(h2o_handler_t *self, h2o_req_t *req) {
+    (void)self;
+    if (!h2o_memis(req->method.base, req->method.len, H2O_STRLIT("GET"))) {
+        return -1;
+    }
+    if (g_fdb_state == NULL) {
+        send_json_error(req, 503, "FDB not configured for this process");
+        return 0;
+    }
+
+    const char *query = req->query_at != SIZE_MAX ? req->path.base + req->query_at + 1 : NULL;
+    size_t query_len = query != NULL ? req->path.len - req->query_at - 1 : 0;
+    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id")) : NULL;
+    if (session_id == NULL) {
+        send_json_error(req, 400, "missing session_id query parameter");
+        return 0;
+    }
+
+    FDBTransaction *tr;
+    if (fdb_create_transaction(g_fdb_state, &tr) != 0) {
+        send_json_error(req, 502, "could not create FDB transaction");
+        return 0;
+    }
+
+    uint8_t begin[128], end[128];
+    size_t begin_len = mud_kv_turn_range_begin(begin, session_id, strlen(session_id));
+    size_t end_len = mud_kv_turn_range_end(end, session_id, strlen(session_id));
+
+    mud_history_ctx_t *ctx = (mud_history_ctx_t *)malloc(sizeof(*ctx));
+    ctx->req = req;
+    ctx->tr = tr;
+    snprintf(ctx->session_id, sizeof(ctx->session_id), "%s", session_id);
+
+    if (fdb_async_get_range(g_fdb_state, tr, begin, (int)begin_len, end, (int)end_len,
+                             on_mud_history_range_read, ctx) != 0) {
+        fdb_transaction_destroy(tr);
+        free(ctx);
+        send_json_error(req, 502, "could not start FDB range read");
+        return 0;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------
  * Registration
  * ------------------------------------------------------------------- */
 
@@ -375,6 +537,7 @@ void mud_http_register(h2o_hostconf_t *hostconf, const char *docroot, const char
 
     register_handler(hostconf, "/api/mud/command", on_mud_command);
     register_handler(hostconf, "/api/mud/stream", on_mud_stream);
+    register_handler(hostconf, "/api/mud/history", on_mud_history);
 
     /* Static site last, at "/" -- h2o_file_register serves everything
      * not matched by the two more specific paths above (h2o matches

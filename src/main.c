@@ -165,6 +165,11 @@ static void *worker_main(void *arg)
         const char *mud_http_port_env = getenv("MUD_HTTP_PORT");
         if (mud_http_port_env != NULL && tctx->hostconf != NULL) {
             int mud_port = atoi(mud_http_port_env);
+            /* Real durability, not a placeholder: thread 0's own FDB
+             * state (already initialized above via fdb_thread_init())
+             * is the same one zonetick already uses -- MUD turns land
+             * in the same FDB cluster, no second connection. */
+            mud_http_set_fdb_state(&tctx->fdb_state);
             if (mud_http_listen(&tctx->h2o_ctx, tctx->loop, mud_port, tctx->cert_file, tctx->key_file) != 0) {
                 fprintf(stderr, "zone-server-h2o: MUD HTTP listener init failed on port %d\n", mud_port);
             }

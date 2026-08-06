@@ -33,10 +33,21 @@
  */
 
 #define SS_MUD_SESSION "zf/mud/session/"
+#define SS_MUD_TURN "zf/mud/turn/"
 
 /* "zf/mud/session/{session_id}". Writes into buf (caller-sized to at
  * least strlen(SS_MUD_SESSION) + session_id_len), returns length. */
 size_t mud_kv_session_key(uint8_t *buf, const char *session_id, size_t session_id_len);
+
+/* "zf/mud/turn/{session_id}/{turn_be32}" -- one key per turn, value is
+ * the raw narration text (no packed struct; plain UTF-8 bytes are a
+ * real, valid FDB value on their own). Big-endian turn number keeps
+ * the range in chronological order under one session's own prefix,
+ * matching zf_kv.h's own big-endian-key convention for the same
+ * reason (lexicographic key order == real order). */
+size_t mud_kv_turn_key(uint8_t *buf, const char *session_id, size_t session_id_len, uint32_t turn);
+size_t mud_kv_turn_range_begin(uint8_t *buf, const char *session_id, size_t session_id_len);
+size_t mud_kv_turn_range_end(uint8_t *buf, const char *session_id, size_t session_id_len);
 
 #pragma pack(push, 1)
 typedef struct {

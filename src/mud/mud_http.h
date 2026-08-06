@@ -13,11 +13,24 @@
 
 #include <h2o.h>
 
+#include "../fdb_database.h"
+
 /* docroot: real filesystem path to mud/web/ (the static site).
  * orchestrator_path/guest_elf_path: passed straight through to
- * mud_session_init(). Registers "/", "/api/mud/command", and
- * "/api/mud/stream" under hostconf. */
+ * mud_session_init(). Registers "/", "/api/mud/command",
+ * "/api/mud/stream", and "/api/mud/history" under hostconf. */
 void mud_http_register(h2o_hostconf_t *hostconf, const char *docroot, const char *orchestrator_path, const char *guest_elf_path);
+
+/* Real FDB durability, not a placeholder: once set, on_mud_command()
+ * writes each turn's own narration to zf/mud/turn/{session_id}/{turn}
+ * (mud_kv.h) after every real mud_step() result, and
+ * GET /api/mud/history?session_id=... range-reads them back as a real
+ * JSON array. Call once, before any request can arrive -- matching
+ * mud_http_listen()'s own thread-0-only, called-once contract. A mud
+ * process with no FDB state set (this function never called) simply
+ * skips the write/read, matching every other optional piece of this
+ * feature (TLS, the Tigris backup). */
+void mud_http_set_fdb_state(fdb_thread_state_t *state);
 
 /* Binds a real TCP listener on `port` and wires it into `loop` via
  * h2o_evloop_socket_create()/h2o_accept(), the same pattern

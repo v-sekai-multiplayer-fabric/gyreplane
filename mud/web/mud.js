@@ -103,5 +103,23 @@
     // still works via plain request/response, so this is not fatal.
   }
 
+  // Real history, not a placeholder: GET /api/mud/history returns every
+  // past turn's own narration for this session_id, straight from FDB
+  // (src/mud/mud_kv.c's zf/mud/turn/ keyspace). Loaded once on page
+  // load, so refreshing the page (or opening the same session_id in a
+  // new tab) shows what already happened instead of starting blank.
+  async function loadHistory() {
+    try {
+      const resp = await fetch("/api/mud/history?session_id=" + encodeURIComponent(sessionId));
+      if (!resp.ok) return;
+      const lines = await resp.json();
+      for (const line of lines) appendTurn(line, "history");
+    } catch (err) {
+      // No FDB configured, or a real network error -- either way the
+      // live session still works without history, so this is not fatal.
+    }
+  }
+  loadHistory();
+
   appendTurn("Connected. Type a command below and press Send.", "session " + sessionId);
 })();
