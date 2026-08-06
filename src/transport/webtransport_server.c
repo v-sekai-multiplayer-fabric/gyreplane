@@ -2,7 +2,9 @@
  * WebTransport/QUIC datagram server, bridging vendored picoquic
  * (thirdparty/picoquic, cmake/picoquic.cmake) into h2o's evloop
  * (src/event_loop.c), per task #11 (plan step 0: transport + basic
- * ZoneTick, no FDB, no physics).
+ * ZoneTick). Originally an in-memory-only placeholder; task #7 wired in
+ * the real FDB-backed ZoneTick (zf_zonetick.c) once fdb_state is set --
+ * see zonetick_fdb() below. Still no physics/IK (task #8).
  *
  * picoquic owns no event loop of its own here -- picoquic_packet_loop()
  * (picoquic's built-in blocking loop) is NOT used, because it would fight
@@ -41,6 +43,8 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+
+#include "../zf_zonetick.h"
 
 #define ZONETICK_RECV_BUF 2048
 #define ZONETICK_SEND_BUF 2048
@@ -83,9 +87,10 @@ static void flush_outbound(webtransport_server_t *server)
     timerfd_settime(server->timer_fd, 0, &its, NULL);
 }
 
-/* Placeholder ZoneTick: applies position += velocity * dt to every active
- * entity. No FDB (task #7), no physics/IK (task #8) -- this exists only
- * to prove a datagram can drive a tick end-to-end. */
+/* Task #11's original in-memory-only placeholder. Superseded by
+ * zf_zonetick_run() below for anything with fdb_state set, but left in
+ * place (unused when fdb_state != NULL) as a no-FDB fallback / reference
+ * for what the FDB version replaced. */
 static void zonetick_step(webtransport_server_t *server, double dt)
 {
     for (int i = 0; i < ZONETICK_MAX_ENTITIES; i++) {
@@ -96,6 +101,29 @@ static void zonetick_step(webtransport_server_t *server, double dt)
         e->cx += e->vx * dt;
         e->cy += e->vy * dt;
         e->cz += e->vz * dt;
+    }
+}
+
+static void on_zonetick_done(void *ctx, bool ok)
+{
+    webtransport_server_t *server = (webtransport_server_t *)ctx;
+    server->zonetick_in_flight = false;
+    if (!ok) {
+        fprintf(stderr, "webtransport_server: zone 0 ZoneTick failed (unretryable FDB error)\n");
+    }
+}
+
+/* Task #7: real FDB-backed ZoneTick. z_id is hardcoded to 0 -- this
+ * server binds one UDP port, i.e. one zone, for now; multi-zone routing
+ * (which zone a given QUIC connection belongs to) is not yet designed. */
+static void zonetick_fdb(webtransport_server_t *server, double dt)
+{
+    if (server->zonetick_in_flight) {
+        return; /* previous tick's transaction hasn't committed yet */
+    }
+    server->zonetick_in_flight = true;
+    if (zf_zonetick_run(server->fdb_state, /* z_id */ 0, dt, on_zonetick_done, server) != 0) {
+        server->zonetick_in_flight = false;
     }
 }
 
@@ -115,9 +143,13 @@ static int default_stream_callback(picoquic_cnx_t *cnx, uint64_t stream_id,
     case picoquic_callback_datagram:
         /* See file header: this is QUIC-level, not yet a negotiated
          * WebTransport session datagram. Ticking anyway to prove the
-         * receive -> tick path, per task #11's stated scope. */
-        zonetick_step(server, 1.0 / 30.0 /* placeholder fixed dt, matches
-                                             godot-loop-slice's TICK_HZ=30 */);
+         * receive -> tick path, per task #11's stated scope. dt is a
+         * placeholder fixed 1/30s, matching godot-loop-slice's TICK_HZ=30. */
+        if (server->fdb_state != NULL) {
+            zonetick_fdb(server, 1.0 / 30.0);
+        } else {
+            zonetick_step(server, 1.0 / 30.0);
+        }
         break;
     default:
         break;
@@ -196,11 +228,13 @@ static int create_udp_socket(int port)
 }
 
 int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
-                              int port, const char *cert_file, const char *key_file)
+                              int port, const char *cert_file, const char *key_file,
+                              fdb_thread_state_t *fdb_state)
 {
     memset(server, 0, sizeof(*server));
     server->loop = loop;
     server->port = port;
+    server->fdb_state = fdb_state;
 
     server->udp_fd = create_udp_socket(port);
     if (server->udp_fd < 0) {

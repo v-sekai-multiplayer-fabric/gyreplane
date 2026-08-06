@@ -73,7 +73,8 @@ static void *worker_main(void *arg)
          * itself; a real cert/key path (matching zone-server's
          * TLS_CERT/TLS_KEY) is needed before this can accept a real QUIC
          * client handshake. Tracked as part of finishing task #11. */
-        if (webtransport_server_init(&tctx->wt_server, tctx->loop, tctx->port, NULL, NULL) != 0) {
+        if (webtransport_server_init(&tctx->wt_server, tctx->loop, tctx->port, NULL, NULL,
+                                      &tctx->fdb_state) != 0) {
             fprintf(stderr, "zone-server-h2o: WebTransport transport init failed on port %d\n",
                     tctx->port);
         }

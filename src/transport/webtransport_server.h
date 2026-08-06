@@ -4,6 +4,8 @@
 #include <picoquic.h>
 #include <stdint.h>
 
+#include "../fdb_database.h"
+
 /* Fixed-size in-memory entity table for the bare ZoneTick (task #11).
  * No FDB, no physics -- position += velocity * dt only. FDB-backed
  * persistence is task #7 (zonefabric M3); this struct is deliberately
@@ -29,6 +31,13 @@ typedef struct {
     h2o_loop_t *loop;
     int port;
 
+    /* Task #7: real FDB-backed ZoneTick (zf_zonetick.c) supersedes the
+     * in-memory-only `entities` table below for anything backed by this
+     * fdb_state -- kept only as an in-flight tick guard (avoid firing a
+     * second FDB transaction for zone 0 before the first commits). */
+    fdb_thread_state_t *fdb_state;
+    bool zonetick_in_flight;
+
     zonetick_entity_t entities[ZONETICK_MAX_ENTITIES];
 } webtransport_server_t;
 
@@ -37,6 +46,7 @@ typedef struct {
  * and wires both the UDP socket and a timerfd into `loop`. Returns 0 on
  * success. */
 int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
-                              int port, const char *cert_file, const char *key_file);
+                              int port, const char *cert_file, const char *key_file,
+                              fdb_thread_state_t *fdb_state);
 
 void webtransport_server_close(webtransport_server_t *server);
