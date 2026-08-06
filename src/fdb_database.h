@@ -12,7 +12,7 @@
 #include "list.h"
 
 /*
- * Async FDB database adapter for h2o-bench-tpcc.
+ * Async FDB database adapter, ported from h2o-bench-tpcc.
  *
  * Replaces the libpq connection pool (database.c) with FDB's C API.
  * FDB futures are integrated into h2o's event loop via

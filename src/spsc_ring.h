@@ -21,7 +21,7 @@
  * Invariant: head - tail <= capacity (never overwrites unread data)
  * Invariant: tail <= head (never reads uninitialized slots)
  *
- * See test/cbmc/spsc_harness.c and test/verification/TpccVerification/Spsc.lean
+ * See test/cbmc/spsc_harness.c and test/verification/ZoneVerification/Spsc.lean
  * for formal verification of these invariants.
  */
 
