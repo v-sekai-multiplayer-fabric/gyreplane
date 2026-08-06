@@ -1,4 +1,4 @@
-app            = "zone-server-h2o-test"
+app            = "zone-server-h2o-mud-test"
 primary_region = "iad"
 
 # Throwaway test app, held strictly inside Fly's Hobby-plan free
