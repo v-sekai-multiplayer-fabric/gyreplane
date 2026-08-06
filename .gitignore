@@ -10,3 +10,8 @@ mud/guest/*.o
 # resolves the Containerfile path relative to -c's own directory,
 # so a deploy from repo root needs a root-level copy) -- never committed.
 /fly.toml
+
+# mud/web/test/ Playwright e2e test artifacts
+mud/web/test/node_modules/
+mud/web/test/test-results/
+mud/web/test/playwright-report/
