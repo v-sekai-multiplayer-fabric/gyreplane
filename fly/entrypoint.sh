@@ -124,6 +124,36 @@ done
 # blobstore URL via --blob-credentials's own documented JSON file
 # form ({"accounts":{"user@host":{"secret":"..."}}}), not embedded in
 # the URL where `ps` could see it.
+# KNOWN REAL LIMITATION, not yet resolved: a live test against a real
+# Tigris bucket (muddy-pine-8190, this project's own throwaway test)
+# got past the region-URL and exit-status bugs above, then hit a
+# further real failure every single cycle: "Could not create backup
+# container: Operation timed out". Real diagnosis performed, not
+# guessed:
+#   - curl and getent both work instantly against the exact same host
+#     from the exact same machine (fly.storage.tigris.dev resolves to
+#     both an A record 149.248.213.147 and an AAAA record; a plain
+#     `curl https://fly.storage.tigris.dev/` gets a real HTTP/2 307
+#     response in well under a second).
+#   - fdbbackup's own --log trace file shows
+#     Type="BlobStoreDoRequestError" Error="lookup_failed"
+#     ErrorDescription="DNS lookup failed" for the hostname form.
+#   - Substituting the literal IPv4 address directly in the
+#     blobstore:// URL (bypassing DNS entirely) reproduces the exact
+#     same "Operation timed out" failure, ruling out DNS resolution
+#     itself as the real cause -- FDB's own blob-store network client
+#     cannot complete a connection here at all, hostname or IP, while
+#     the OS's own resolver/TLS stack (curl) has no trouble on the
+#     same machine. This points at something inside FDB's own
+#     network-stack implementation (its blob client does not use
+#     libcurl/the OS TLS stack) interacting badly with this specific
+#     environment, not this script's own logic.
+# Left running as designed (it retries every BACKUP_INTERVAL_SECONDS
+# forever, matching a real transient-outage posture) rather than
+# disabled, since the region/exit-status fixes above are real and
+# correct regardless of this separate, deeper problem. Root-causing
+# FDB's own blob-store client further is real, unstarted follow-up
+# work.
 if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
   BACKUP_SLOTS=${BACKUP_SLOTS:-4}
   BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-21600} # 4x/day
