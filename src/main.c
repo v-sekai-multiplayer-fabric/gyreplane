@@ -37,7 +37,6 @@
 
 #include "error.h"
 #include "global_data.h"
-#include "thread.h"
 #include "transport/webtransport_server.h"
 
 #define DEFAULT_PORT 7443 /* matches zone-server's UDP 7443, per zone.ex's x-webtransport spec */
@@ -276,7 +275,15 @@ int main(int argc, char *argv[])
     }
 
     free(threads);
-    cleanup_fdb_global();
+    /* Not thread.h's cleanup_fdb_global() -- that function operates on
+     * thread.c's own separate static fdb_global_t, not this file's own
+     * fdb_global above (confirmed by reading thread.c directly: it
+     * calls fdb_global_cleanup(&fdb_global) against ITS OWN static of
+     * that name, never touching this one). Calling fdb_global_cleanup()
+     * directly on our own variable instead -- found while writing
+     * tools/zonetick_throughput.c for task #21 and hitting the same
+     * mismatch there. */
+    fdb_global_cleanup(&fdb_global);
 
     return 0;
 }
