@@ -132,10 +132,22 @@ jobs:
               test_mj_physics_freefall)
                 # The one test never actually run before this workflow --
                 # real link against the real built mujoco target.
+                #
+                # -Lbuild/lib, not -Lbuild/mujoco-build/lib: mujoco's own
+                # cmake/MujocoOptions.cmake sets
+                # CMAKE_LIBRARY_OUTPUT_DIRECTORY to
+                # ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR} -- CMAKE_BINARY_DIR
+                # is always the top build dir (build/), not the
+                # add_subdirectory-local mujoco-build/ dir, and
+                # CMAKE_INSTALL_LIBDIR (from GNUInstallDirs) is "lib" on this
+                # runner. Confirmed by the real build's own log line,
+                # "Linking CXX shared library ../lib/libmujoco.so", and by
+                # the real "cannot find -lmujoco" link error the old
+                # build/mujoco-build/lib path produced -- not guessed.
                 clang -Wall -Wextra -std=c11 -Isrc/physics -Ithirdparty/mujoco/include \
                   src/physics/mj_physics.c "$t" \
-                  -Lbuild/mujoco-build/lib -lmujoco -lm -o "/tmp/$name"
-                export LD_LIBRARY_PATH="$PWD/build/mujoco-build/lib:$LD_LIBRARY_PATH" ;;
+                  -Lbuild/lib -lmujoco -lm -o "/tmp/$name"
+                export LD_LIBRARY_PATH="$PWD/build/lib:$LD_LIBRARY_PATH" ;;
               *)
                 echo "no build recipe for $name -- add one rather than skip silently"
                 exit 1 ;;
