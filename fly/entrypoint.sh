@@ -101,10 +101,13 @@ done
 
 # Rotating FDB -> Fly Tigris (S3-compatible) backup, real fdbbackup,
 # not a hand-rolled snapshot copy. Only runs if Tigris credentials are
-# actually set (flyctl secrets set TIGRIS_ACCESS_KEY_ID/
-# TIGRIS_SECRET_ACCESS_KEY, after `flyctl storage create`) -- silently
-# skipped otherwise, matching every other optional piece of this
-# entrypoint (TLS_CERT/TLS_KEY already work the same way in main.c).
+# actually set. Real names, not invented: `flyctl storage create`
+# stages AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_ENDPOINT_URL_S3/
+# AWS_REGION/BUCKET_NAME as this app's own secrets (confirmed by
+# reading its own real output directly, not assumed) -- this reads
+# those, not a made-up TIGRIS_* name. Skipped silently if unset,
+# matching every other optional piece of this entrypoint
+# (TLS_CERT/TLS_KEY already work the same way in main.c).
 #
 # Rotation, not unbounded growth: BACKUP_SLOTS destinations
 # (zone-server-h2o-mud-backup-slot-0 .. slot-(N-1)) are reused in a
@@ -121,21 +124,23 @@ done
 # blobstore URL via --blob-credentials's own documented JSON file
 # form ({"accounts":{"user@host":{"secret":"..."}}}), not embedded in
 # the URL where `ps` could see it.
-if [ -n "$TIGRIS_ACCESS_KEY_ID" ] && [ -n "$TIGRIS_SECRET_ACCESS_KEY" ]; then
+if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
   BACKUP_SLOTS=${BACKUP_SLOTS:-4}
   BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-21600} # 4x/day
-  TIGRIS_HOST=${TIGRIS_HOST:-fly.storage.tigris.dev}
-  TIGRIS_BUCKET=${TIGRIS_BUCKET:-zone-server-h2o-mud}
+  # AWS_ENDPOINT_URL_S3 is a full URL (https://fly.storage.tigris.dev);
+  # blobstore:// wants a bare host, so strip the scheme.
+  TIGRIS_HOST=$(echo "$AWS_ENDPOINT_URL_S3" | sed -E 's#^https?://##')
+  TIGRIS_BUCKET=${BUCKET_NAME}
   BLOB_CREDS_FILE="$TLS_DIR/tigris-blob-credentials.json"
   cat >"$BLOB_CREDS_FILE" <<EOF
-{"accounts":{"${TIGRIS_ACCESS_KEY_ID}@${TIGRIS_HOST}":{"secret":"${TIGRIS_SECRET_ACCESS_KEY}"}}}
+{"accounts":{"${AWS_ACCESS_KEY_ID}@${TIGRIS_HOST}":{"secret":"${AWS_SECRET_ACCESS_KEY}"}}}
 EOF
   chmod 600 "$BLOB_CREDS_FILE"
 
   (
     slot=0
     while true; do
-      dest="blobstore://${TIGRIS_ACCESS_KEY_ID}@${TIGRIS_HOST}/zone-server-h2o-mud-backup-slot-${slot}?bucket=${TIGRIS_BUCKET}"
+      dest="blobstore://${AWS_ACCESS_KEY_ID}@${TIGRIS_HOST}/zone-server-h2o-mud-backup-slot-${slot}?bucket=${TIGRIS_BUCKET}"
       fdbbackup delete -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" 2>/dev/null || true
       if fdbbackup start -C "$CLUSTER_FILE" -d "$dest" --blob-credentials "$BLOB_CREDS_FILE" -w 2>&1 \
         | tee -a "$LOG_ROOT/backup.log" >&2; then
@@ -149,7 +154,7 @@ EOF
   ) &
   echo "entrypoint: started rotating FDB backup ($BACKUP_SLOTS slots, every ${BACKUP_INTERVAL_SECONDS}s, bucket=$TIGRIS_BUCKET)" >&2
 else
-  echo "entrypoint: TIGRIS_ACCESS_KEY_ID/TIGRIS_SECRET_ACCESS_KEY not set, skipping FDB backup" >&2
+  echo "entrypoint: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY not set, skipping FDB backup" >&2
 fi
 
 # Zone count: 357 aggregate commits/sec (this same 8-process FDB
