@@ -80,3 +80,11 @@ jobs:
           clang -Wall -Wextra -std=c11 -Isrc/gen \
             src/gen/rebac.c test/unit/test_rebac.c -o /tmp/test_rebac
           /tmp/test_rebac
+
+      - name: Unit test -- zf_kv multi-zone isolation (task #12)
+        run: |
+          export PATH="/opt/filc/bin:$PATH"
+          clang -Wall -Wextra -std=c11 -Isrc -Isrc/gen \
+            src/zf_kv.c src/gen/xr_grid_entity_packet.c test/unit/test_zf_kv_multi_zone.c \
+            -o /tmp/test_zf_kv_multi_zone
+          /tmp/test_zf_kv_multi_zone

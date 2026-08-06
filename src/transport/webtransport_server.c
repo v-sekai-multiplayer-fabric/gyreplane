@@ -4,7 +4,12 @@
  * (src/event_loop.c), per task #11 (plan step 0: transport + basic
  * ZoneTick). Originally an in-memory-only placeholder; task #7 wired in
  * the real FDB-backed ZoneTick (zf_zonetick.c) once fdb_state is set --
- * see zonetick_fdb() below. Still no physics/IK (task #8).
+ * see zonetick_fdb_all_zones() below, which ticks a small fabric of
+ * zones, not a single hardcoded one (see that function's own comment).
+ * Task #12 wired in the real H3/WebTransport
+ * session layer (wt_session.c) -- see that file's header for the exact
+ * call sequence, grounded against picoquic's own reference server. Still
+ * no physics/IK (task #8).
  *
  * picoquic owns no event loop of its own here -- picoquic_packet_loop()
  * (picoquic's built-in blocking loop) is NOT used, because it would fight
@@ -21,24 +26,21 @@
  * exact vendored h2o commit and a wrong guess here is worse than a
  * well-understood POSIX primitive.
  *
- * STATUS: this wires the QUIC transport layer (packets in/out, connection
- * lifecycle) end-to-end. It does NOT yet negotiate WebTransport sessions
- * over HTTP/3 -- that is picohttp/webtransport.c's h3zero server layer
- * (ALPN "h3", CONNECT :protocol=webtransport), not yet registered here.
- * The default callback below fires for raw QUIC stream/datagram events on
- * any connection that completes a handshake; it drives the bare ZoneTick
- * off picoquic_callback_datagram as a placeholder for what will become a
- * real WebTransport datagram once that H3 layer is wired in. Do not read
- * this as "WebTransport works" -- it is "QUIC transport works," one layer
- * short.
+ * STATUS: real WebTransport sessions on ZONE_WT_PATH (wt_session.h) now
+ * drive the ZoneTick, not raw QUIC datagrams on any connection -- see
+ * wt_session.c's header for what's grounded against picoquic's reference
+ * server versus what's flagged unverified (protocol-string negotiation,
+ * TLS cert/key are still NULL/NULL below).
  */
 
 #include "webtransport_server.h"
+#include "wt_session.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
@@ -104,65 +106,76 @@ static void zonetick_step(webtransport_server_t *server, double dt)
     }
 }
 
+typedef struct {
+    webtransport_server_t *server;
+    uint32_t z_id;
+} zonetick_done_ctx_t;
+
 static void on_zonetick_done(void *ctx, bool ok)
 {
-    webtransport_server_t *server = (webtransport_server_t *)ctx;
-    server->zonetick_in_flight = false;
+    zonetick_done_ctx_t *dctx = (zonetick_done_ctx_t *)ctx;
+    dctx->server->zone_in_flight[dctx->z_id] = false;
     if (!ok) {
-        fprintf(stderr, "webtransport_server: zone 0 ZoneTick failed (unretryable FDB error)\n");
+        fprintf(stderr, "webtransport_server: zone %u ZoneTick failed (unretryable FDB error)\n",
+                dctx->z_id);
     }
+    free(dctx);
 }
 
-/* Task #7: real FDB-backed ZoneTick. z_id is hardcoded to 0 -- this
- * server binds one UDP port, i.e. one zone, for now; multi-zone routing
- * (which zone a given QUIC connection belongs to) is not yet designed.
- * tick_count is 1 -- task #14 moved zf_zonetick_run() from a float dt
- * to an integer tick_count (see zf_zonetick.h's header comment for why:
- * wire velocity is already a per-tick displacement). */
-static void zonetick_fdb(webtransport_server_t *server)
+/* Task #7 (M3) + this pass's correction: z_id was hardcoded to 0 --
+ * "one process, one zone" -- until told directly that a zone is a fabric
+ * of zones and needs testing as such. This process now ticks
+ * WT_SERVER_ZONE_FABRIC_SIZE zones (z_id 0..N-1) every datagram/timer
+ * event, each with its own in-flight guard (zone_in_flight[]) so one
+ * zone's pending commit never blocks another's tick -- the isolation
+ * this relies on (no two zones' FDB key ranges ever overlap) is proven
+ * in test/unit/test_zf_kv_multi_zone.c, not just asserted here.
+ *
+ * What this still is NOT: multiple zone-server *processes* coordinating
+ * over a network (that needs NoGod.lean's gossip protocol, per
+ * docs/0001-defer-nogod-gossip-authority.md -- still correctly deferred,
+ * a separate question from "does this one process handle more than one
+ * zone correctly"). tick_count is 1 -- task #14 moved zf_zonetick_run()
+ * from a float dt to an integer tick_count (see zf_zonetick.h's header
+ * comment for why: wire velocity is already a per-tick displacement). */
+static void zonetick_fdb_all_zones(webtransport_server_t *server)
 {
-    if (server->zonetick_in_flight) {
-        return; /* previous tick's transaction hasn't committed yet */
-    }
-    server->zonetick_in_flight = true;
-    if (zf_zonetick_run(server->fdb_state, /* z_id */ 0, /* tick_count */ 1,
-                         on_zonetick_done, server) != 0) {
-        server->zonetick_in_flight = false;
-    }
-}
-
-static int default_stream_callback(picoquic_cnx_t *cnx, uint64_t stream_id,
-                                    uint8_t *bytes, size_t length,
-                                    picoquic_call_back_event_t fin_or_event,
-                                    void *callback_ctx, void *stream_ctx)
-{
-    webtransport_server_t *server = (webtransport_server_t *)callback_ctx;
-    (void)cnx;
-    (void)stream_id;
-    (void)bytes;
-    (void)length;
-    (void)stream_ctx;
-
-    switch (fin_or_event) {
-    case picoquic_callback_datagram:
-        /* See file header: this is QUIC-level, not yet a negotiated
-         * WebTransport session datagram. Ticking anyway to prove the
-         * receive -> tick path, per task #11's stated scope. One fixed
-         * tick per datagram (matches godot-loop-slice's TICK_HZ=30
-         * cadence assumption; the FDB path no longer takes a float dt --
-         * see zonetick_fdb()'s comment). The in-memory fallback below
-         * still uses a float dt since it never migrated off that shape. */
-        if (server->fdb_state != NULL) {
-            zonetick_fdb(server);
-        } else {
-            zonetick_step(server, 1.0 / 30.0);
+    for (uint32_t z_id = 0; z_id < WT_SERVER_ZONE_FABRIC_SIZE; z_id++) {
+        if (server->zone_in_flight[z_id]) {
+            continue; /* this zone's previous tick hasn't committed yet */
         }
-        break;
-    default:
-        break;
+        zonetick_done_ctx_t *dctx = calloc(1, sizeof(*dctx));
+        if (dctx == NULL) {
+            continue;
+        }
+        dctx->server = server;
+        dctx->z_id = z_id;
+        server->zone_in_flight[z_id] = true;
+        if (zf_zonetick_run(server->fdb_state, z_id, /* tick_count */ 1,
+                             on_zonetick_done, dctx) != 0) {
+            server->zone_in_flight[z_id] = false;
+            free(dctx);
+        }
     }
+}
 
-    return 0;
+/* Fired by wt_session.c's zone_wt_session_callback on
+ * picohttp_callback_post_datagram -- i.e. a real negotiated WebTransport
+ * session datagram on ZONE_WT_PATH, not a raw QUIC datagram on any
+ * connection (that was task #11's placeholder scope; task #12 replaced
+ * it). One fixed tick across the whole zone fabric per datagram
+ * (matches godot-loop-slice's TICK_HZ=30 cadence assumption). The
+ * in-memory zonetick_step() fallback is used only when fdb_state is
+ * NULL (still float-dt based; never migrated off that shape since the
+ * FDB path superseded it before that would have mattered). */
+static void on_wt_datagram(void *app_ctx)
+{
+    webtransport_server_t *server = (webtransport_server_t *)app_ctx;
+    if (server->fdb_state != NULL) {
+        zonetick_fdb_all_zones(server);
+    } else {
+        zonetick_step(server, 1.0 / 30.0);
+    }
 }
 
 static void on_udp_readable(h2o_socket_t *sock, const char *err)
@@ -250,12 +263,23 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
         return -1;
     }
 
+    /* zone_wt_create_context builds the h3zero path table (ZONE_WT_PATH ->
+     * wt_session.c's session callbacks); on_wt_datagram is what a
+     * negotiated session's datagrams ultimately drive. */
+    server->wt_ctx = zone_wt_create_context(on_wt_datagram, server);
+    if (server->wt_ctx == NULL) {
+        fprintf(stderr, "webtransport_server: zone_wt_create_context failed\n");
+        close(server->udp_fd);
+        return -1;
+    }
+
     uint8_t reset_seed[PICOQUIC_RESET_SECRET_SIZE] = {0};
     server->quic = picoquic_create(
         /* max_nb_connections */ 256,
         cert_file, key_file, /* cert_root_file_name */ NULL,
-        /* default_alpn */ NULL, /* not "h3" yet -- see file header */
-        default_stream_callback, server,
+        /* default_alpn */ "h3", /* fixed -- see wt_session.h's header comment
+                                     for why this skips alpn_select_fn entirely */
+        h3zero_callback, server->wt_ctx,
         /* cnx_id_callback */ NULL, /* cnx_id_callback_data */ NULL,
         reset_seed,
         picoquic_current_time(), /* current_time */
@@ -265,6 +289,7 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
 
     if (server->quic == NULL) {
         fprintf(stderr, "webtransport_server: picoquic_create failed\n");
+        zone_wt_free_context(NULL, server->wt_ctx);
         close(server->udp_fd);
         return -1;
     }
@@ -285,9 +310,9 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
     server->timer_sock->data = server;
     h2o_socket_read_start(server->timer_sock, on_timer_fire);
 
-    fprintf(stderr, "webtransport_server: QUIC transport bound on UDP %d "
-                     "(WebTransport/H3 session layer not yet wired -- see file header)\n",
-            port);
+    fprintf(stderr, "webtransport_server: WebTransport bound on UDP %d, path %s, "
+                     "fabric of %d zone(s) (TLS cert/key still NULL/NULL -- unauthenticated)\n",
+            port, ZONE_WT_PATH, WT_SERVER_ZONE_FABRIC_SIZE);
 
     return 0;
 }
@@ -305,6 +330,7 @@ void webtransport_server_close(webtransport_server_t *server)
     if (server->quic != NULL) {
         picoquic_free(server->quic);
     }
+    zone_wt_free_context(NULL, server->wt_ctx);
     if (server->timer_fd >= 0) {
         close(server->timer_fd);
     }
