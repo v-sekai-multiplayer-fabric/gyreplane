@@ -1,47 +1,67 @@
 # zone-server-h2o
 
-Native `libh2o` + FoundationDB (FDB) zone server for the V-Sekai multiplayer
-fabric, replacing the Godot `FabricZone`/`FabricZoneJournal`/`FabricMMOGZone`
-engine (`V-Sekai-fire/multiplayer-fabric-build`, `godot/modules/multiplayer_fabric/`)
-on the **server** side. The client stays Godot engine, unchanged; only the
+This is a native `libh2o` + FoundationDB (FDB) zone server for the V-Sekai
+multiplayer fabric. It replaces the Godot
+`FabricZone`/`FabricZoneJournal`/`FabricMMOGZone` engine
+(`V-Sekai-fire/multiplayer-fabric-build`, `godot/modules/multiplayer_fabric/`)
+on the **server** side. The client stays Godot engine, unchanged. Only the
 authoritative zone server moves.
 
 ## Status
 
-QUIC transport and H3/WebTransport session negotiation are both wired
-(`src/transport/webtransport_server.c`, `src/transport/wt_session.c`),
-driving a real FDB-backed `ZoneTick` (`src/zf_zonetick.c`) across a small
-fabric of zones (`WT_SERVER_ZONE_FABRIC_SIZE`, currently 4) — not a
-single hardcoded zone. Entity/prop physics (MuJoCo) and avatar IK
-(`sinew-mocap/solve`'s `Align.lean`) are both wired and tested. Not yet
-done: TLS cert/key (still `NULL`/`NULL`, so unauthenticated), a real
-`cmake --build` against the actual linked libraries (everything so far
-is verified by syntax-checks against real headers and standalone unit
-tests, not a full build), and cutover from the Godot deployment.
-The event-loop, worker-pool, and FDB scaffold were seeded from
-[`weftspun/h2o-bench-tpcc`](https://github.com/weftspun/h2o-bench-tpcc)
-(that repo's TPC-C benchmark work is unrelated and stays there; only the
-reusable infrastructure and the unimplemented `zonefabric` scenario design
-carried forward here).
+This repo wires QUIC transport and H3/WebTransport session negotiation
+(`src/transport/webtransport_server.c`, `src/transport/wt_session.c`). These
+drive a real FDB-backed `ZoneTick` (`src/zf_zonetick.c`). Each process runs
+exactly one zone. The zone ID comes from `main.c`'s required `-z<zone_id>`
+flag, not a hardcoded value.
+
+A zone fabric means multiple processes. Each process runs one zone (1
+process : 1 zone). This matches `zone-server/AGENTS.md`'s deployment
+shape: one UDP port per zone instance, up to 100 concurrent zones. Entity
+and prop physics (MuJoCo) and avatar IK (`sinew-mocap/solve`'s
+`Align.lean`) are both wired and tested.
+
+Three items are not done yet:
+- The TLS cert and key are still `NULL`/`NULL`, so the server is
+  unauthenticated.
+- No real `cmake --build` against the actual linked libraries ran in this
+  repo's own development yet. CI now does this build
+  (`.github/workflows/real-build.yml`). Until this section says otherwise,
+  treat it as freshly wired, not yet fully green.
+- Cutover from the Godot deployment did not happen yet.
+
+The event-loop, worker-pool, and FDB scaffold came from
+[`weftspun/h2o-bench-tpcc`](https://github.com/weftspun/h2o-bench-tpcc). That
+repo's TPC-C benchmark work is unrelated and stays there. Only the reusable
+infrastructure, and the unimplemented `zonefabric` scenario design, carried
+forward here.
 
 ### Concurrency and scaling
 
-Each zone in the fabric gets its own independent FDB transaction
-(`zf_zonetick_run`, one call per zone, no cross-zone lock or shared
-state) — RFD 0002's own core-scaling argument ("no cross-zone
-conflicts... near-linear core scaling, unlike TPC-C") depends on exactly
-that independence, and `test/unit/test_zf_kv_multi_zone.c` proves the
-FDB keyspace isolation it relies on (6 test zones, no entity key from one
-zone ever falls inside another's range). **Not yet measured**: actual
-linear scaling of concurrent zone ticks needs a running FDB cluster and
-a load generator (RFD 0013's `wrk` harness) — this repo's test suite
-cannot exercise that without live infrastructure, so it's a real,
-open verification gap, not a claim made and left unchecked.
+Each zone-server-h2o process runs its own FDB transaction per tick
+(`zf_zonetick_run`, one call per process, one zone). RFD 0002's own
+core-scaling argument depends on exactly this: "each core processes
+independent zones... near-linear core scaling, unlike TPC-C where
+district-level conflicts cause retries." `test/unit/test_zf_kv_multi_zone.c`
+proves the FDB keyspace isolation many such processes rely on. The test uses
+6 test zone IDs. No entity key from one zone ever falls inside another
+zone's key range. So no process can ever read or write another zone's data
+by accident.
 
-"Fabric of zones" here means *one process handling several zones* — it
-does not yet mean multiple zone-server processes coordinating with each
-other. That's a distinct, larger question (`docs/0001-defer-nogod-gossip-authority.md`),
-deliberately deferred until there's a second process to coordinate with.
+**Not yet measured**: actual linear scaling across many concurrent
+zone-server-h2o processes. This measurement needs a running FDB cluster,
+several deployed processes, and a load generator (RFD 0013's `wrk`
+harness). This repo's test suite cannot exercise that without live
+infrastructure. This is a real, open verification gap, not a claim made and
+left unchecked.
+
+Coordinating many zone-server-h2o processes is a distinct, larger question.
+Two examples of this: deciding which process owns which zone, and moving
+an entity from one zone's process to another. This question is tracked in
+`docs/0001-defer-nogod-gossip-authority.md`. The team deliberately deferred
+this question. The team needs to revisit it now: the deployment model is
+confirmed as multiple processes, not a single process looping over several
+zones.
 
 ## Design provenance
 
@@ -49,64 +69,71 @@ deliberately deferred until there's a second process to coordinate with.
   `h2o-bench-tpcc`'s `src/` (RFD 0005 actor-lite architecture, RFD 0011 async
   FDB callback chain).
 - **Transport is `picoquic` + `picotls`, not `h2o`'s own QUIC stack.**
-  `h2o` (pinned by `h2o-bench-tpcc`) has no WebTransport/datagram support at
-  all -- confirmed by searching its source tree. The Godot client's
+  `h2o` (pinned by `h2o-bench-tpcc`) has no WebTransport or datagram support
+  at all. A search of its source tree confirms this. The Godot client's
   `WebTransportPeer` (`V-Sekai-fire/multiplayer-fabric-build`,
   `godot/modules/http3/`) is built on vendored `picoquic` + `picotls`, which
   *does* have working WebTransport, datagrams, and MASQUE support
   (`picohttp/webtransport.c`, `picoquictest/datagram_tests.c`,
   `picohttp/picomask.c`). `thirdparty/picoquic` and `thirdparty/picotls` here
   are git submodules pinned to the exact commits that fork vendors
-  (`790e973b`, `3b4d709f`), so client and server share one proven QUIC
-  stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`),
+  (`790e973b`, `3b4d709f`). This way, client and server share one proven
+  QUIC stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`),
   `src/transport/webtransport_server.c` (the QUIC transport bridge into
-  h2o's evloop), and `src/transport/wt_session.c` (H3/WebTransport
-  session negotiation on top of it, task #12).
-- Entity/migration/ghost/journal shape: modeled on the real (if
+  h2o's evloop), and `src/transport/wt_session.c` (H3/WebTransport session
+  negotiation on top of it, task #12).
+- Entity, migration, ghost, and journal shape: modeled on the real (if
   never-yet-invoked) `FabricZone` C++ engine in
   `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.
 - Physics: [MuJoCo](https://github.com/google-deepmind/mujoco) 3.11.0
-  (`src/physics/`) for entity/prop contact physics -- collisions, joints,
-  forces. Confirmed via its own header that MuJoCo has no first-party IK
-  (only Jacobian primitives), so it is not the IK layer.
-- Avatar IK/posing: [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)'s
-  own `Align.lean` (Kabsch-style rotation fitting -- `src/gen/sinew_align.c`),
-  not `kevinzakka/mink`'s QP-based approach (evaluated and deferred,
-  `docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`). Verified against
-  `Align.lean`'s own `AlignTest.lean` known-rotation-recovery test --
-  floating-point-exact recovery, not just within tolerance.
-- Entity/ReBAC types: generated from `lean-entity-packet` and
-  `lean-rebac-core` rather than hand-duplicated per language.
+  (`src/physics/`) for entity and prop contact physics. Examples of this:
+  collisions, joints, forces. Its own header confirms MuJoCo has no
+  first-party IK, only Jacobian primitives. So MuJoCo is not the IK layer.
+- Avatar IK and posing: [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)'s
+  own `Align.lean` (Kabsch-style rotation fitting, in `src/gen/sinew_align.c`),
+  not `kevinzakka/mink`'s QP-based approach. The team evaluated `mink` and
+  deferred it (`docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`). A test
+  against `Align.lean`'s own `AlignTest.lean` known-rotation-recovery check
+  verifies this port. The result matches the exact expected value in
+  floating-point arithmetic, not just a value within tolerance.
+- Entity and ReBAC types: generated from `lean-entity-packet` and
+  `lean-rebac-core`, not hand-duplicated per language.
   `src/gen/xr_grid_entity_packet.{c,h}` is a direct C transcription of
-  `lean-entity-packet`'s `EntityPacket/Codec.lean` (100-byte packet,
-  little-endian, no floats on the wire), differentially tested against
-  that repo's 64 Plausible-verified golden vectors
-  (`test/unit/test_xr_grid_entity_packet.c` -- byte-identical round-trip,
-  not just field equality) and now the real storage type in `zf_kv.h`'s
-  `zf_entity_val_t` (the float-double placeholder is gone). `zf_zonetick.c`
-  ticks in fixed-tick integer micrometers, matching the wire's actual
-  semantics (velocity is a per-tick displacement, not a continuous rate).
+  `lean-entity-packet`'s `EntityPacket/Codec.lean` (a 100-byte packet,
+  little-endian, no floats on the wire). A differential test checks it
+  against that repo's 64 Plausible-verified golden vectors
+  (`test/unit/test_xr_grid_entity_packet.c`, a byte-identical round-trip
+  check, not just a field-equality check). This codec is now the real
+  storage type in `zf_kv.h`'s `zf_entity_val_t`. The float-double
+  placeholder is gone.
+
+  `zf_zonetick.c` ticks in fixed-tick integer micrometers, to match the
+  wire's actual meaning: velocity is a per-tick displacement, not a
+  continuous rate.
+
   `src/gen/rebac.{c,h}` ports `lean-rebac-core`'s `Rebac/core/ReBAC.lean`
-  `rebacCheck` -- a pure predicate over `Relation`/`Action` ranks, tested
-  against the Lean source's own proved theorems (`rebac_empty_denied`,
-  `rebac_public_observe`, the owner-only `.modify` boundary). Not yet
-  wired into the transport layer -- the geometric-authority routing
-  ("which zone evaluates the check") it depends on is task #8/#9's
-  zone-authority work. `Rebac/core/NoGod.lean`, which `ReBAC.lean`
-  imports, turned out to be a much bigger find than task #13 alone: a
-  gossip-based, coordinator-free vector-clock consensus system for zone
-  authority/interest -- directly relevant to task #8's zone-authority and
-  entity-migration work, not yet acted on.
-- Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c)
-  in CI (`.github/workflows/build-filc.yml`, task #3) — this process parses
+  `rebacCheck`, a pure predicate over `Relation`/`Action` ranks. Tests
+  check it against the Lean source's own proved theorems
+  (`rebac_empty_denied`, `rebac_public_observe`, the owner-only `.modify`
+  boundary). This predicate is not wired into the transport layer yet.
+  The geometric-authority routing it depends on ("which zone evaluates
+  the check") is task #8/#9's zone-authority work.
+
+  `Rebac/core/NoGod.lean`, which `ReBAC.lean` imports, turned out to be a
+  much bigger find than task #13 alone. It is a gossip-based,
+  coordinator-free vector-clock consensus system for zone authority and
+  interest. This system is directly relevant to the multiple-processes
+  coordination question above. The team has not acted on it yet.
+- Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c) in
+  CI (`.github/workflows/build-filc.yml`, task #3). This process parses
   untrusted WebTransport input directly from clients. The FFI boundary
   against `h2o`/`libfdb_c` (both still stock-compiled) is not resolved yet.
 
 Design decisions land as dated entries in
 [`multiplayer-fabric-manuals/decisions/`](https://github.com/v-sekai-multiplayer-fabric/multiplayer-fabric-manuals/tree/main/decisions),
-not in a local `rfd/` folder — see that repo for the carried-over RFD content
+not in a local `rfd/` folder. See that repo for the carried-over RFD content
 (zonefabric scaling, actor-lite architecture, FDB keyspace design, PERT
-critical path, etc.) once ported.
+critical path, and so on) once ported.
 
 ## Build
 
@@ -115,17 +142,27 @@ git submodule update --init --recursive
 cmake -B build && cmake --build build
 ```
 
-Requires `libh2o` (evloop build), OpenSSL, and the FoundationDB C client
-(`libfdb_c`) on the include/library path (see `CMakeLists.txt`), plus the
-vendored submodules (`picoquic`, `picotls`, `mujoco`) built via
-`cmake/picoquic.cmake` / `cmake/mujoco.cmake`. **Not yet actually run in
-this repo's own development** -- see the Status section above.
+This build requires `libh2o` (evloop build) on the include/library path.
+`libh2o`'s own build needs `libbrotli-dev` present at its build time. See
+`h2o`'s `CMakeLists.txt`: it gates `libh2o-evloop`'s install rule on
+finding Brotli.
+
+This build also requires OpenSSL and the FoundationDB C client
+(`libfdb_c`), both on the include/library path (see `CMakeLists.txt`).
+It requires `mbedtls` too, built from source, not the system package.
+Apt's `libmbedtls-dev` does not include `mbedtls_config.h`.
+
+It also requires the vendored submodules (`picoquic`, `picotls`, `mujoco`), built
+via `cmake/picoquic.cmake` / `cmake/mujoco.cmake`.
+`.github/workflows/real-build.yml` runs this full build in CI. Check that
+workflow's latest run for current status before assuming this build is
+green.
 
 ## Verification
 
-- `test/cbmc/spsc_harness.c` — CBMC proof of the SPSC ring buffer, ported
+- `test/cbmc/spsc_harness.c`: a CBMC proof of the SPSC ring buffer, ported
   from `h2o-bench-tpcc` (RFD 0008).
-- `test/verification/` — Lean 4 + Plausible specification harness
-  (`ZoneVerification.Spsc`), same provenance. Zonefabric-specific
-  invariants (entity migration, ghost consistency, journal replay) land
+- `test/verification/`: a Lean 4 + Plausible specification harness
+  (`ZoneVerification.Spsc`), from the same source. Zonefabric-specific
+  invariants (entity migration, ghost consistency, journal replay) will land
   here as those features are built.
