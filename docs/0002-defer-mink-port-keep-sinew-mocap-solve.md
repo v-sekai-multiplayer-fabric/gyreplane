@@ -1,6 +1,8 @@
 # Decision: defer porting kevinzakka/mink, keep sinew-mocap/solve for avatar IK
 
-**Status:** decided
+**Status:** superseded -- see "Revision" section at the end. The analysis
+of what `mink` actually is (below) still holds; only the decision
+changed.
 
 ## Context
 
@@ -51,3 +53,25 @@ own test suite or a differential test against its Python output the same
 way `xr_grid_entity_packet.c` was validated against `lean-entity-packet`'s
 golden vectors. Track this as its own scoped task when that budget
 exists, not folded into task #8's current entity-physics scope.
+
+## Revision
+
+Per direct instruction, `sinew-mocap/solve`'s avatar-posing role is now
+built on a QP-based IK core mirroring `mink`'s architecture (task #16,
+revised), rather than staying on plain FK + LBS with `mink` deferred
+wholesale. The scope split:
+
+- **Task #16** ports the QP-assembly core `mink`'s `solve_ik.py`
+  implements (task residuals + Levenberg-Marquardt damping as the QP
+  objective, `mj_jac*` Jacobians from the already-vendored MuJoCo),
+  applied specifically to `sinew-mocap/solve`'s avatar-posing use case.
+  Still needs a vendored C QP solver (OSQP).
+- **Task #17** stays deferred: the rest of `mink`'s surface (joint/
+  velocity/collision-avoidance limits as QP inequalities, closed-chain
+  equality constraints, the full Lie group module, multi-task weighting
+  beyond one avatar-posing task) that task #16's narrower scope doesn't
+  need. May turn out unnecessary once #16 is built and proven.
+
+The "large, multi-session effort" sizing above still applies to task
+#16's revised scope -- it does not become small because it is scoped
+narrower, only more clearly bounded.
