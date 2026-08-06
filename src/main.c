@@ -229,6 +229,21 @@ int main(int argc, char *argv[])
 
     h2o_config_init(&config.h2o_config);
 
+    /* h2o_context_init() asserts config->hosts[0] != NULL unconditionally,
+     * even though this process serves no HTTP requests through h2o's own
+     * routing -- all real traffic goes through the picoquic/QUIC transport
+     * in src/transport/. h2o's context object is still coupled to its
+     * config for virtual-host lookups internally, so at least one host
+     * must exist regardless. This is h2o's own documented minimal-usage
+     * pattern (see h2o's examples/simple.c), not a guess: confirmed by
+     * running the actual built binary for the first time (task #20) and
+     * hitting this exact assertion, "h2o_context_init: Assertion
+     * `config->hosts[0] != NULL' failed" -- every previous check of this
+     * repo was a build/link/unit-test pass, never an actual process
+     * start, so this had never been exercised before. No path/handler is
+     * registered under it since nothing serves HTTP through this host. */
+    h2o_config_register_host(&config.h2o_config, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+
     thread_ctx_t *threads = calloc(config.worker_count, sizeof(*threads));
 
     for (size_t i = 0; i < config.worker_count; i++) {

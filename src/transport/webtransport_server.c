@@ -292,8 +292,9 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
     h2o_socket_read_start(server->timer_sock, on_timer_fire);
 
     fprintf(stderr, "webtransport_server: WebTransport bound on UDP %d, path %s, "
-                     "zone %u (TLS cert/key still NULL/NULL -- unauthenticated)\n",
-            port, ZONE_WT_PATH, server->z_id);
+                     "zone %u (TLS %s)\n",
+            port, ZONE_WT_PATH, server->z_id,
+            (cert_file && key_file) ? "cert/key loaded" : "cert/key NULL/NULL -- unauthenticated smoke-test mode");
 
     return 0;
 }

@@ -100,3 +100,12 @@ RUN set -e; \
       esac; \
       LD_LIBRARY_PATH="$PWD/build/lib:$LD_LIBRARY_PATH" "/tmp/$name"; \
     done
+
+# ENTRYPOINT/CMD only take effect at `podman run`, not during this
+# image's own build above -- this image doubles as both the CI
+# artifact (a `podman build` pass here means everything above passed)
+# and the deploy image (task #20), rather than rebuilding the same
+# binary a second time in a separate image.
+COPY ci-local/zone-server-h2o-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
