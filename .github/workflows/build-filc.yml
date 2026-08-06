@@ -67,3 +67,9 @@ jobs:
             src/gen/xr_grid_entity_packet.c test/unit/test_xr_grid_entity_packet.c \
             -o /tmp/test_xr_grid_entity_packet
           /tmp/test_xr_grid_entity_packet
+
+      - name: Unit test -- ZoneTick's velocity-to-micrometer conversion (task #14)
+        run: |
+          export PATH="/opt/filc/bin:$PATH"
+          clang -Wall -Wextra -std=c11 test/unit/test_vel_to_um_per_tick.c -o /tmp/test_vel_to_um_per_tick
+          /tmp/test_vel_to_um_per_tick

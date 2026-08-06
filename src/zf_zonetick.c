@@ -14,10 +14,21 @@ typedef struct {
     FDBTransaction *tr;
     fdb_thread_state_t *fdb_state;
     uint32_t z_id;
-    double dt;
+    uint32_t tick_count;
     zf_zonetick_done_cb done_cb;
     void *user_ctx;
 } zonetick_ctx_t;
+
+/* vel_i16's physical meaning, per lean-entity-packet's README: scaled to
+ * +/-XR_PACKET_V_MAX_PHYSICAL_DEFAULT_UM_PER_TICK at +/-INT16_MAX. The
+ * codec (xr_grid_entity_packet.c) intentionally does not do this
+ * conversion itself -- see its header comment -- so it lives here, at
+ * the one call site that needs physical micrometers instead of the raw
+ * wire integer. */
+static int64_t vel_to_um_per_tick(int16_t v)
+{
+    return ((int64_t)v * XR_PACKET_V_MAX_PHYSICAL_DEFAULT_UM_PER_TICK) / INT16_MAX;
+}
 
 static void zt_on_error_retry(FDBFuture *future, void *arg);
 static void zt_on_range_read(FDBFuture *future, void *arg);
@@ -86,9 +97,12 @@ static void zt_on_range_read(FDBFuture *future, void *arg)
         zf_entity_val_t ev;
         zf_kv_decode_entity(kvs[i].value, kvs[i].value_length, &ev);
 
-        ev.cx += ev.vx * ctx->dt;
-        ev.cy += ev.vy * ctx->dt;
-        ev.cz += ev.vz * ctx->dt;
+        int64_t dx = vel_to_um_per_tick(ev.vel_x) * ctx->tick_count;
+        int64_t dy = vel_to_um_per_tick(ev.vel_y) * ctx->tick_count;
+        int64_t dz = vel_to_um_per_tick(ev.vel_z) * ctx->tick_count;
+        ev.pos_um_x += dx;
+        ev.pos_um_y += dy;
+        ev.pos_um_z += dz;
 
         uint8_t val_buf[ZF_ENTITY_VAL_SIZE];
         zf_kv_encode_entity(val_buf, &ev);
@@ -109,7 +123,7 @@ static void zt_on_commit(FDBFuture *future, void *arg)
     zt_finish(ctx, true);
 }
 
-int zf_zonetick_run(fdb_thread_state_t *fdb_state, uint32_t z_id, double dt,
+int zf_zonetick_run(fdb_thread_state_t *fdb_state, uint32_t z_id, uint32_t tick_count,
                      zf_zonetick_done_cb done_cb, void *ctx_arg)
 {
     zonetick_ctx_t *ctx = calloc(1, sizeof(*ctx));
@@ -118,7 +132,7 @@ int zf_zonetick_run(fdb_thread_state_t *fdb_state, uint32_t z_id, double dt,
     }
     ctx->fdb_state = fdb_state;
     ctx->z_id = z_id;
-    ctx->dt = dt;
+    ctx->tick_count = tick_count;
     ctx->done_cb = done_cb;
     ctx->user_ctx = ctx_arg;
 

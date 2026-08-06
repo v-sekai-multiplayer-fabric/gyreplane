@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <foundationdb/fdb_c.h>
 
+#include "gen/xr_grid_entity_packet.h"
+
 /*
  * Zonefabric key-value encoding layer for FoundationDB.
  *
@@ -21,11 +23,14 @@
  * zf/effect/, zf/fanout/ keyspaces (CastSpell, task H/I in RFD 0020) are
  * later milestones, not this one.
  *
- * Entity shape matches src/transport/webtransport_server.h's
- * zonetick_entity_t (3D position/velocity, no acceleration) rather than
- * FabricZone's 9-field FabricEntity or RFD 0002's 2D benchmark shape --
- * this is a placeholder pending task #10's lean-entity-packet codegen,
- * which is the actual source of truth for the wire/storage entity type.
+ * Task #14: entity storage value is now xr_grid_entity_packet_t verbatim
+ * (task #10's lean-entity-packet-generated codec) -- not a hand-rolled
+ * float struct. Storing the exact wire packet means no lossy
+ * float<->integral conversion happens between "what's in FDB" and "what
+ * goes out over WebTransport," and the FDB value bytes are the same 100
+ * bytes xr_grid_entity_packet_encode() produces, verifiable against
+ * lean-entity-packet's golden vectors the same way test/unit/ already
+ * does for the codec itself.
  */
 
 #define SS_ZF_ZONE   "zf/zone/"
@@ -54,17 +59,16 @@ typedef struct {
     uint32_t population;
 } zf_zone_val_t;
 
-typedef struct {
-    uint32_t e_id;     /* redundant with the key, kept so a range-scanned
-                           value is self-describing without re-parsing the key */
-    double   cx, cy, cz;
-    double   vx, vy, vz;
-} zf_entity_val_t;
-
 #pragma pack(pop)
 
+/* The stored value IS the wire packet -- global_id (== e_id, redundant
+ * with the key so a range-scanned value is self-describing) is already
+ * the first field. */
+typedef xr_grid_entity_packet_t zf_entity_val_t;
+
 #define ZF_ZONE_VAL_SIZE   ((int)sizeof(zf_zone_val_t))
-#define ZF_ENTITY_VAL_SIZE ((int)sizeof(zf_entity_val_t))
+#define ZF_ENTITY_VAL_SIZE XR_PACKET_SIZE /* the encoded wire size, not sizeof(struct) --
+                                              the struct has host padding the wire doesn't */
 
 /* --- Encode/decode (host byte order in the struct; FDB values are just
  * opaque bytes, so no wire-endianness conversion is needed here the way

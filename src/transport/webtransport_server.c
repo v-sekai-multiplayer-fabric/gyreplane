@@ -115,14 +115,18 @@ static void on_zonetick_done(void *ctx, bool ok)
 
 /* Task #7: real FDB-backed ZoneTick. z_id is hardcoded to 0 -- this
  * server binds one UDP port, i.e. one zone, for now; multi-zone routing
- * (which zone a given QUIC connection belongs to) is not yet designed. */
-static void zonetick_fdb(webtransport_server_t *server, double dt)
+ * (which zone a given QUIC connection belongs to) is not yet designed.
+ * tick_count is 1 -- task #14 moved zf_zonetick_run() from a float dt
+ * to an integer tick_count (see zf_zonetick.h's header comment for why:
+ * wire velocity is already a per-tick displacement). */
+static void zonetick_fdb(webtransport_server_t *server)
 {
     if (server->zonetick_in_flight) {
         return; /* previous tick's transaction hasn't committed yet */
     }
     server->zonetick_in_flight = true;
-    if (zf_zonetick_run(server->fdb_state, /* z_id */ 0, dt, on_zonetick_done, server) != 0) {
+    if (zf_zonetick_run(server->fdb_state, /* z_id */ 0, /* tick_count */ 1,
+                         on_zonetick_done, server) != 0) {
         server->zonetick_in_flight = false;
     }
 }
@@ -143,10 +147,13 @@ static int default_stream_callback(picoquic_cnx_t *cnx, uint64_t stream_id,
     case picoquic_callback_datagram:
         /* See file header: this is QUIC-level, not yet a negotiated
          * WebTransport session datagram. Ticking anyway to prove the
-         * receive -> tick path, per task #11's stated scope. dt is a
-         * placeholder fixed 1/30s, matching godot-loop-slice's TICK_HZ=30. */
+         * receive -> tick path, per task #11's stated scope. One fixed
+         * tick per datagram (matches godot-loop-slice's TICK_HZ=30
+         * cadence assumption; the FDB path no longer takes a float dt --
+         * see zonetick_fdb()'s comment). The in-memory fallback below
+         * still uses a float dt since it never migrated off that shape. */
         if (server->fdb_state != NULL) {
-            zonetick_fdb(server, 1.0 / 30.0);
+            zonetick_fdb(server);
         } else {
             zonetick_step(server, 1.0 / 30.0);
         }
