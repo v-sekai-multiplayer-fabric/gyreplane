@@ -49,16 +49,21 @@ typedef struct {
     bool running;
     bool bind_transport;
     int port;
+    uint32_t z_id;
     webtransport_server_t wt_server;
 } thread_ctx_t;
 
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s -a<thread_count> -c<cluster_file> [-p<port>]\n"
+            "Usage: %s -a<thread_count> -c<cluster_file> -z<zone_id> [-p<port>]\n"
             "\n"
             "  -a  Number of worker threads\n"
             "  -c  FoundationDB cluster file path\n"
+            "  -z  This process's zone ID -- a zone fabric is multiple\n"
+            "      processes, each one zone (1 process : 1 zone), matching\n"
+            "      zone-server/AGENTS.md's one-UDP-port-per-zone-instance\n"
+            "      deployment shape. Required.\n"
             "  -p  QUIC/UDP port for the transport, thread 0 only (default 7443)\n",
             prog);
 }
@@ -74,7 +79,7 @@ static void *worker_main(void *arg)
          * TLS_CERT/TLS_KEY) is needed before this can accept a real QUIC
          * client handshake. Tracked as part of finishing task #11. */
         if (webtransport_server_init(&tctx->wt_server, tctx->loop, tctx->port, NULL, NULL,
-                                      &tctx->fdb_state) != 0) {
+                                      &tctx->fdb_state, tctx->z_id) != 0) {
             fprintf(stderr, "zone-server-h2o: WebTransport transport init failed on port %d\n",
                     tctx->port);
         }
@@ -99,16 +104,26 @@ int main(int argc, char *argv[])
     config.fdb_cluster_file = "/etc/foundationdb/fdb.cluster";
     config.worker_count = 1;
     int port = DEFAULT_PORT;
+    long z_id = -1;
+    bool have_z_id = false;
 
     int opt;
-    while ((opt = getopt(argc, argv, "a:c:p:h")) != -1) {
+    while ((opt = getopt(argc, argv, "a:c:p:z:h")) != -1) {
         switch (opt) {
         case 'a': config.worker_count = (size_t)atoi(optarg); break;
         case 'c': config.fdb_cluster_file = optarg; break;
         case 'p': port = atoi(optarg); break;
+        case 'z': z_id = atol(optarg); have_z_id = true; break;
         case 'h':
         default: usage(argv[0]); return opt == 'h' ? 0 : 1;
         }
+    }
+
+    if (!have_z_id || z_id < 0) {
+        fprintf(stderr, "zone-server-h2o: -z<zone_id> is required "
+                        "(a zone fabric is multiple processes, each one zone)\n");
+        usage(argv[0]);
+        return 1;
     }
 
     signal(SIGPIPE, SIG_IGN);
@@ -128,6 +143,7 @@ int main(int argc, char *argv[])
         t->running = true;
         t->bind_transport = (i == 0);
         t->port = port;
+        t->z_id = (uint32_t)z_id;
         t->loop = h2o_evloop_create();
 
         h2o_context_init(&t->h2o_ctx, t->loop, &config.h2o_config);
@@ -136,8 +152,8 @@ int main(int argc, char *argv[])
         pthread_create(&t->tid, NULL, worker_main, t);
     }
 
-    fprintf(stderr, "zone-server-h2o: %zu worker(s), QUIC transport on port %d (thread 0 only)\n",
-            config.worker_count, port);
+    fprintf(stderr, "zone-server-h2o: zone %u, %zu worker(s), QUIC transport on port %d (thread 0 only)\n",
+            (uint32_t)z_id, config.worker_count, port);
 
     fdb_run_network();
 

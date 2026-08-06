@@ -2,10 +2,14 @@
  * Multi-zone isolation test for zf_kv's keyspace -- task #12's direct
  * response to being told a zone is a fabric of zones, not a singleton.
  * Every earlier test used a single z_id (7); this proves the property
- * webtransport_server.c's zonetick_fdb_all_zones() and
- * WT_SERVER_ZONE_FABRIC_SIZE actually depend on: N zones sharing one FDB
- * keyspace never see each other's entities, at any fabric size and any
- * z_id spacing (not just adjacent small integers).
+ * every zone-server-h2o *process* depends on regardless of which zone
+ * it is configured for (webtransport_server.c's z_id, set via main.c's
+ * -z flag): N zones sharing one FDB keyspace never see each other's
+ * entities, for any z_id spacing (not just adjacent small integers).
+ * The isolation matters even though each process only ever touches its
+ * own one zone -- FDB is the shared store multiple such processes all
+ * write into, so no process may ever be able to read or write another
+ * zone's keys, by construction of the keyspace itself.
  */
 
 #include "zf_kv.h"
@@ -15,10 +19,10 @@
 
 #define NUM_TEST_ZONES 6
 
-/* Mirrors WT_SERVER_ZONE_FABRIC_SIZE=4 plus wider/sparser z_id values
- * (0, 1, 2, 3 contiguous like the real fabric, plus 1000 and
- * 0xFFFFFFFE near the u32 boundary) to catch off-by-one range-end bugs
- * a purely-contiguous test could miss. */
+/* Contiguous small z_id values (0, 1, 2, 3, as a small deployment might
+ * assign) plus wider/sparser values (1000 and 0xFFFFFFFE, near the u32
+ * boundary) to catch off-by-one range-end bugs a purely-contiguous
+ * test could miss. */
 static const uint32_t test_zones[NUM_TEST_ZONES] = { 0, 1, 2, 3, 1000, 0xFFFFFFFEu };
 
 int main(void)

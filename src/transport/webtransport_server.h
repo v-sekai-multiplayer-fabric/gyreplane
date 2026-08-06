@@ -14,20 +14,22 @@
  * lean-entity-packet codegen, task #10). */
 #define ZONETICK_MAX_ENTITIES 256
 
-/* How many zones this one process ticks per event -- a small "fabric,"
- * per direct correction that a zone is a fabric of zones, not a
- * singleton. Each zone gets its own FDB transaction
- * (zf_zonetick_run in zf_zonetick.c), with no cross-zone lock or shared
- * state -- RFD 0002's own core-scaling argument ("no cross-zone
- * conflicts... near-linear core scaling, unlike TPC-C where
- * district-level conflicts cause retries") depends on exactly that
- * independence, and this fabric size is kept small and compile-time
- * fixed so the property is easy to keep true by inspection rather than
- * proven only by a benchmark. Actually measuring linear scaling of
- * concurrent zone ticks needs a running FDB cluster and load generator
- * (RFD 0013's wrk harness) -- not something this sandbox can execute;
- * flagged as a real gap, not silently assumed passing. */
-#define WT_SERVER_ZONE_FABRIC_SIZE 4
+/* CORRECTED: a zone fabric is multiple processes, each handling exactly
+ * one zone (1 process : 1 zone), not one process ticking a fixed array
+ * of zones internally. The earlier WT_SERVER_ZONE_FABRIC_SIZE=4 design
+ * (N zones ticked in a loop inside a single process) was wrong -- it
+ * does not match zone-server/AGENTS.md's actual deployment shape (one
+ * UDP port per zone instance, up to 100 concurrent zones, i.e. up to
+ * 100 concurrent *processes*), and it does not match RFD 0002's
+ * core-scaling argument either: "each core processes independent
+ * zones" describes independent processes/cores, not one process
+ * internally looping over several zones. This process now handles
+ * exactly one zone, whose z_id is supplied at startup (see main.c's
+ * -z<zone_id> flag). Coordinating many such processes/zones is
+ * `docs/0001-defer-nogod-gossip-authority.md`'s gossip/VClock question
+ * -- still real work, not yet done, but now correctly scoped as
+ * "multiple processes, multiple zones, 1-1" instead of folded into a
+ * single-process loop that never needed it. */
 
 typedef struct {
     int active;
@@ -52,12 +54,11 @@ typedef struct {
      * fdb_state. */
     fdb_thread_state_t *fdb_state;
 
-    /* This process handles a fabric of WT_SERVER_ZONE_FABRIC_SIZE zones
-     * (z_id 0..N-1), not a single hardcoded zone -- see
-     * zonetick_fdb_all_zones() in webtransport_server.c for why that
-     * changed and what "fabric" does/doesn't mean here. One in-flight
-     * guard per zone so no zone's pending commit blocks another's tick. */
-    bool zone_in_flight[WT_SERVER_ZONE_FABRIC_SIZE];
+    /* This process handles exactly one zone -- z_id, set at startup.
+     * zone_in_flight guards that single zone's FDB transaction so a
+     * second ZoneTick never starts before the previous one commits. */
+    uint32_t z_id;
+    bool zone_in_flight;
 
     /* H3/WebTransport session context (task #12) -- owns the path table
      * routing ZONE_WT_PATH to the session callbacks in wt_session.c. */
@@ -68,10 +69,11 @@ typedef struct {
 
 /* Binds UDP `port`, creates the picoquic context (cert_file/key_file are
  * PEM paths, matching zone-server's TLS_CERT/TLS_KEY per zone-server/AGENTS.md),
- * and wires both the UDP socket and a timerfd into `loop`. Returns 0 on
- * success. */
+ * and wires both the UDP socket and a timerfd into `loop`. z_id is the
+ * one zone this process handles (see the "fabric = multiple processes"
+ * correction above). Returns 0 on success. */
 int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
                               int port, const char *cert_file, const char *key_file,
-                              fdb_thread_state_t *fdb_state);
+                              fdb_thread_state_t *fdb_state, uint32_t z_id);
 
 void webtransport_server_close(webtransport_server_t *server);

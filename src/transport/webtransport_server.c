@@ -4,8 +4,10 @@
  * (src/event_loop.c), per task #11 (plan step 0: transport + basic
  * ZoneTick). Originally an in-memory-only placeholder; task #7 wired in
  * the real FDB-backed ZoneTick (zf_zonetick.c) once fdb_state is set --
- * see zonetick_fdb_all_zones() below, which ticks a small fabric of
- * zones, not a single hardcoded one (see that function's own comment).
+ * see zonetick_fdb_this_zone() below. This process ticks exactly one
+ * zone (server->z_id, set at startup) -- a zone fabric means multiple
+ * *processes*, each one zone, not one process looping over several
+ * zones (see that function's own comment for the correction history).
  * Task #12 wired in the real H3/WebTransport
  * session layer (wt_session.c) -- see that file's header for the exact
  * call sequence, grounded against picoquic's own reference server. Still
@@ -106,56 +108,34 @@ static void zonetick_step(webtransport_server_t *server, double dt)
     }
 }
 
-typedef struct {
-    webtransport_server_t *server;
-    uint32_t z_id;
-} zonetick_done_ctx_t;
-
 static void on_zonetick_done(void *ctx, bool ok)
 {
-    zonetick_done_ctx_t *dctx = (zonetick_done_ctx_t *)ctx;
-    dctx->server->zone_in_flight[dctx->z_id] = false;
+    webtransport_server_t *server = (webtransport_server_t *)ctx;
+    server->zone_in_flight = false;
     if (!ok) {
         fprintf(stderr, "webtransport_server: zone %u ZoneTick failed (unretryable FDB error)\n",
-                dctx->z_id);
+                server->z_id);
     }
-    free(dctx);
 }
 
-/* Task #7 (M3) + this pass's correction: z_id was hardcoded to 0 --
- * "one process, one zone" -- until told directly that a zone is a fabric
- * of zones and needs testing as such. This process now ticks
- * WT_SERVER_ZONE_FABRIC_SIZE zones (z_id 0..N-1) every datagram/timer
- * event, each with its own in-flight guard (zone_in_flight[]) so one
- * zone's pending commit never blocks another's tick -- the isolation
- * this relies on (no two zones' FDB key ranges ever overlap) is proven
- * in test/unit/test_zf_kv_multi_zone.c, not just asserted here.
- *
- * What this still is NOT: multiple zone-server *processes* coordinating
- * over a network (that needs NoGod.lean's gossip protocol, per
- * docs/0001-defer-nogod-gossip-authority.md -- still correctly deferred,
- * a separate question from "does this one process handle more than one
- * zone correctly"). tick_count is 1 -- task #14 moved zf_zonetick_run()
- * from a float dt to an integer tick_count (see zf_zonetick.h's header
- * comment for why: wire velocity is already a per-tick displacement). */
-static void zonetick_fdb_all_zones(webtransport_server_t *server)
+/* CORRECTED (see webtransport_server.h's header comment): this process
+ * ticks exactly one zone -- server->z_id, set at startup -- not a fixed
+ * array of several. A zone fabric is multiple *processes*, each one
+ * zone, not one process looping over several zones internally. The
+ * single in-flight guard (zone_in_flight) stops a second ZoneTick from
+ * starting before the previous one commits. tick_count is 1 -- task
+ * #14 moved zf_zonetick_run() from a float dt to an integer tick_count
+ * (see zf_zonetick.h's header comment for why: wire velocity is
+ * already a per-tick displacement). */
+static void zonetick_fdb_this_zone(webtransport_server_t *server)
 {
-    for (uint32_t z_id = 0; z_id < WT_SERVER_ZONE_FABRIC_SIZE; z_id++) {
-        if (server->zone_in_flight[z_id]) {
-            continue; /* this zone's previous tick hasn't committed yet */
-        }
-        zonetick_done_ctx_t *dctx = calloc(1, sizeof(*dctx));
-        if (dctx == NULL) {
-            continue;
-        }
-        dctx->server = server;
-        dctx->z_id = z_id;
-        server->zone_in_flight[z_id] = true;
-        if (zf_zonetick_run(server->fdb_state, z_id, /* tick_count */ 1,
-                             on_zonetick_done, dctx) != 0) {
-            server->zone_in_flight[z_id] = false;
-            free(dctx);
-        }
+    if (server->zone_in_flight) {
+        return; /* previous tick hasn't committed yet */
+    }
+    server->zone_in_flight = true;
+    if (zf_zonetick_run(server->fdb_state, server->z_id, /* tick_count */ 1,
+                         on_zonetick_done, server) != 0) {
+        server->zone_in_flight = false;
     }
 }
 
@@ -163,16 +143,16 @@ static void zonetick_fdb_all_zones(webtransport_server_t *server)
  * picohttp_callback_post_datagram -- i.e. a real negotiated WebTransport
  * session datagram on ZONE_WT_PATH, not a raw QUIC datagram on any
  * connection (that was task #11's placeholder scope; task #12 replaced
- * it). One fixed tick across the whole zone fabric per datagram
- * (matches godot-loop-slice's TICK_HZ=30 cadence assumption). The
- * in-memory zonetick_step() fallback is used only when fdb_state is
- * NULL (still float-dt based; never migrated off that shape since the
- * FDB path superseded it before that would have mattered). */
+ * it). One fixed tick for this process's one zone per datagram (matches
+ * godot-loop-slice's TICK_HZ=30 cadence assumption). The in-memory
+ * zonetick_step() fallback is used only when fdb_state is NULL (still
+ * float-dt based; never migrated off that shape since the FDB path
+ * superseded it before that would have mattered). */
 static void on_wt_datagram(void *app_ctx)
 {
     webtransport_server_t *server = (webtransport_server_t *)app_ctx;
     if (server->fdb_state != NULL) {
-        zonetick_fdb_all_zones(server);
+        zonetick_fdb_this_zone(server);
     } else {
         zonetick_step(server, 1.0 / 30.0);
     }
@@ -249,12 +229,13 @@ static int create_udp_socket(int port)
 
 int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
                               int port, const char *cert_file, const char *key_file,
-                              fdb_thread_state_t *fdb_state)
+                              fdb_thread_state_t *fdb_state, uint32_t z_id)
 {
     memset(server, 0, sizeof(*server));
     server->loop = loop;
     server->port = port;
     server->fdb_state = fdb_state;
+    server->z_id = z_id;
 
     server->udp_fd = create_udp_socket(port);
     if (server->udp_fd < 0) {
@@ -311,8 +292,8 @@ int webtransport_server_init(webtransport_server_t *server, h2o_loop_t *loop,
     h2o_socket_read_start(server->timer_sock, on_timer_fire);
 
     fprintf(stderr, "webtransport_server: WebTransport bound on UDP %d, path %s, "
-                     "fabric of %d zone(s) (TLS cert/key still NULL/NULL -- unauthenticated)\n",
-            port, ZONE_WT_PATH, WT_SERVER_ZONE_FABRIC_SIZE);
+                     "zone %u (TLS cert/key still NULL/NULL -- unauthenticated)\n",
+            port, ZONE_WT_PATH, server->z_id);
 
     return 0;
 }
