@@ -12,8 +12,12 @@ QUIC transport and H3/WebTransport session negotiation are both wired
 (`src/transport/webtransport_server.c`, `src/transport/wt_session.c`),
 driving a real FDB-backed `ZoneTick` (`src/zf_zonetick.c`) across a small
 fabric of zones (`WT_SERVER_ZONE_FABRIC_SIZE`, currently 4) — not a
-single hardcoded zone. Not yet done: TLS cert/key (still `NULL`/`NULL`,
-so unauthenticated), physics/IK, and cutover from the Godot deployment.
+single hardcoded zone. Entity/prop physics (MuJoCo) and avatar IK
+(`sinew-mocap/solve`'s `Align.lean`) are both wired and tested. Not yet
+done: TLS cert/key (still `NULL`/`NULL`, so unauthenticated), a real
+`cmake --build` against the actual linked libraries (everything so far
+is verified by syntax-checks against real headers and standalone unit
+tests, not a full build), and cutover from the Godot deployment.
 The event-loop, worker-pool, and FDB scaffold were seeded from
 [`weftspun/h2o-bench-tpcc`](https://github.com/weftspun/h2o-bench-tpcc)
 (that repo's TPC-C benchmark work is unrelated and stays there; only the
@@ -54,9 +58,10 @@ deliberately deferred until there's a second process to coordinate with.
   `picohttp/picomask.c`). `thirdparty/picoquic` and `thirdparty/picotls` here
   are git submodules pinned to the exact commits that fork vendors
   (`790e973b`, `3b4d709f`), so client and server share one proven QUIC
-  stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`) and
-  `src/transport/webtransport_server.c` (not yet implemented -- the actual
-  wiring point for task #11).
+  stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`),
+  `src/transport/webtransport_server.c` (the QUIC transport bridge into
+  h2o's evloop), and `src/transport/wt_session.c` (H3/WebTransport
+  session negotiation on top of it, task #12).
 - Entity/migration/ghost/journal shape: modeled on the real (if
   never-yet-invoked) `FabricZone` C++ engine in
   `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.
@@ -93,8 +98,9 @@ deliberately deferred until there's a second process to coordinate with.
   authority/interest -- directly relevant to task #8's zone-authority and
   entity-migration work, not yet acted on.
 - Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c)
-  once the toolchain is wired in (task #3) — this process parses untrusted
-  WebTransport input directly from clients.
+  in CI (`.github/workflows/build-filc.yml`, task #3) — this process parses
+  untrusted WebTransport input directly from clients. The FFI boundary
+  against `h2o`/`libfdb_c` (both still stock-compiled) is not resolved yet.
 
 Design decisions land as dated entries in
 [`multiplayer-fabric-manuals/decisions/`](https://github.com/v-sekai-multiplayer-fabric/multiplayer-fabric-manuals/tree/main/decisions),
@@ -105,11 +111,15 @@ critical path, etc.) once ported.
 ## Build
 
 ```sh
+git submodule update --init --recursive
 cmake -B build && cmake --build build
 ```
 
 Requires `libh2o` (evloop build), OpenSSL, and the FoundationDB C client
-(`libfdb_c`) on the include/library path. See `CMakeLists.txt`.
+(`libfdb_c`) on the include/library path (see `CMakeLists.txt`), plus the
+vendored submodules (`picoquic`, `picotls`, `mujoco`) built via
+`cmake/picoquic.cmake` / `cmake/mujoco.cmake`. **Not yet actually run in
+this repo's own development** -- see the Status section above.
 
 ## Verification
 
