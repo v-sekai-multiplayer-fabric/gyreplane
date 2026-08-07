@@ -22,13 +22,24 @@
  *               Values are capped well under FDB's own limits so no
  *               chunking layer is needed or wanted.
  *
- *   ZONE_OBJ_*  The object store, which is aria-storage: casync
- *               content-defined chunking, .caibx/.caidx indexes, zstd
- *               chunks, over a local cache or S3. Immutable and
+ *   ZONE_OBJ_*  The object store: casync/desync content-defined
+ *               chunking, .caibx indexes, zstd chunks, over a local
+ *               cache and an S3-shaped store. Immutable and
  *               deduplicated across every asset that shares chunks --
  *               the property that matters most for user-generated
  *               content, where a thousand uploads are mostly the same
  *               bytes.
+ *
+ *               Two implementations of that format already exist and
+ *               neither is written here: aria-storage (Elixir, the
+ *               upload/publish side) and fabric-godot-core's
+ *               modules/multiplayer_fabric_asset (C++, the fetch and
+ *               verify side, on branch feat/module-multiplayer-fabric-
+ *               asset). The C++ one is the reference for this host,
+ *               and its header is explicit that its constants are
+ *               canonical: SHA-512/256 chunk ids, 16 KB to 256 KB
+ *               chunks, AES-128-GCM with a 24 h key TTL, and Uro for
+ *               the ACL check. This ABI must not restate any of them.
  *
  * Putting content in FDB would pay transaction cost, replication, and
  * quota for bytes that never change and are identical in every zone.

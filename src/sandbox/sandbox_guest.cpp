@@ -148,18 +148,25 @@ static void ecall_entropy(SandboxMachine &m)
 }
 
 /*
- * Object store, declared in the ABI and not yet implemented.
+ * Object store, declared in the ABI and not yet wired.
  *
- * ZONE_OBJ_GET reads immutable content-addressed bytes from the CDN /
- * casync / S3 tier. ZONE_OBJ_PUT publishes, and a guest holds no such
- * capability on its own: it needs a ReBAC delegation edge to a
- * principal that holds admin capability, and the publish is
- * attributed to that principal (rfd/0095).
+ * Deliberately NOT implemented here. fabric-godot-core's
+ * modules/multiplayer_fabric_asset already implements this exact
+ * format in C++ -- .caibx parsing, chunk fetch, SHA-512/256
+ * verification, zstd, AES-128-GCM, local cache, and the Uro ACL
+ * check. Writing a second casync client in this file would repeat
+ * the mistake this whole rewrite corrected: a bespoke reimplementation
+ * of something that exists.
  *
- * Both answer -ENOSYS until the backing store lands. That is the same
- * answer the catch-all would give, but stated here on purpose, so a
- * guest developer reading the log sees "not built yet" rather than
- * "wrong syscall number".
+ * ZONE_OBJ_PUT additionally is not a guest capability. A guest
+ * reaches it only through a ReBAC delegation edge to a principal that
+ * holds admin capability, and the publish is attributed to that
+ * principal (rfd/0095).
+ *
+ * Both answer -ENOSYS until that module is extracted from the Godot
+ * build and linked here. Stated explicitly rather than left to the
+ * catch-all, so a guest developer reading the log sees "not wired
+ * yet" instead of "wrong syscall number".
  */
 static void ecall_obj_unimplemented(SandboxMachine &m)
 {
