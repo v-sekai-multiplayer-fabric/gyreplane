@@ -1,28 +1,103 @@
 cff-version: 1.2.0
-message: >-
-  If you use this software, cite it as below. mud/guest/mud_guest.cpp
-  is one guest ELF among several this project's own raw-libriscv
-  sandbox architecture is built to host (a Godot guest ELF is the
-  other one named in the sandboxed-godot-in-zone-server-h2o decision
-  doc, multiplayer-fabric-manuals PR #128) -- not the whole of
-  zone-server-h2o, which also has its own WebTransport/QUIC transport,
-  FDB zone state, physics, and avatar IK. See the references entry
-  below for the MUD guest's own separate provenance.
-title: zone-server-h2o
+message: "If you use this software, please cite it as below."
+title: "zone-server-h2o: A zone server for the V-Sekai multiplayer fabric"
+abstract: >
+  Host for the minimum user-generated-content game loop. Terminates
+  WebTransport over QUIC with picoquic, keeps zone entity state in
+  FoundationDB as integer micrometers, and runs sandboxed guest
+  programs. Script guests run in-process under libriscv against an
+  eight-call domain ABI. Engine guests run as separate processes under
+  Bubblewrap. ReBAC gates both planes.
 type: software
-url: https://github.com/v-sekai-multiplayer-fabric/zone-server-h2o
+authors:
+  - family-names: Lee
+    given-names: "K. S. Ernest (iFire)"
+    email: ernest.lee@chibifire.com
+    orcid: "https://orcid.org/0000-0003-4570-1436"
+version: 0.1.0-dev.1
+date-released: "2026-08-07"
+license: MIT
+repository-code: "https://github.com/v-sekai-multiplayer-fabric/zone-server-h2o"
+url: "https://github.com/v-sekai-multiplayer-fabric/zone-server-h2o"
+keywords:
+  - multiplayer
+  - webtransport
+  - quic
+  - foundationdb
+  - riscv
+  - sandbox
+  - rebac
+  - godot
+
 references:
   - type: software
-    title: CrucibleBench_Phase1
+    title: "libriscv: A Fast and Compact RISC-V Sandbox for Games and Embedded Use"
     authors:
-      - name: CrucibleBench
-    url: https://github.com/CrucibleBench/CrucibleBench_Phase1
-    license: MIT
+      - family-names: Walla
+        given-names: "Alf-André"
+    url: "https://github.com/libriscv/libriscv"
     notes: >-
-      Source of the Middleham MUD scenario ported to
-      mud/guest/mud_guest.cpp -- Source_Code/state_machine.py's
-      MiddlehamStateMachine (rooms, NPCs, items, commands, trust/
-      suspicion, objectives) and Source_Code/classifier.py's
-      _fallback_classification(). See mud_guest.cpp's own file header
-      for the full provenance note and its one documented deviation
-      (a ChaCha20 PRNG in place of CPython's Mersenne Twister).
+      Vendored at thirdparty/libriscv. Runs script guests in-process
+      against src/sandbox/zone_abi.h. Chosen for the rollback path
+      because serialize_to and forking give bit-exact snapshot and
+      replay, which multiplayer-fabric-manuals rfd/0098 measures.
+
+  - type: software
+    title: "picoquic: A Minimalist Implementation of the QUIC Protocol"
+    authors:
+      - family-names: Huitema
+        given-names: Christian
+    url: "https://github.com/private-octopus/picoquic"
+    notes: >-
+      Vendored at thirdparty/picoquic. Terminates QUIC and
+      WebTransport in src/transport/.
+
+  - type: software
+    title: "H2O: An Optimized HTTP/1, HTTP/2, HTTP/3 Server"
+    authors:
+      - family-names: Oku
+        given-names: Kazuho
+    url: "https://github.com/h2o/h2o"
+    notes: >-
+      Used only as an event loop and cross-thread message queue. It
+      serves no HTTP path in this repository.
+
+  - type: software
+    title: FoundationDB
+    authors:
+      - name: "Apple Inc."
+    url: "https://github.com/apple/foundationdb"
+    notes: >-
+      Linearizable datastore for zone entity state and for the guest
+      key-value store in src/sandbox/zf_guest_kv.c.
+
+  - type: software
+    title: "QCBOR: A Comprehensive, Powerful, Commercial-Quality CBOR Encoder/Decoder"
+    authors:
+      - family-names: Lundblade
+        given-names: Laurence
+    url: "https://github.com/laurencelundblade/QCBOR"
+    notes: >-
+      Vendored at thirdparty/QCBOR for the guest ABI wire format.
+
+  - type: software
+    title: "Bubblewrap: Unprivileged Sandboxing Tool"
+    authors:
+      - name: "containers project"
+    url: "https://github.com/containers/bubblewrap"
+    notes: >-
+      Runs engine guests as separate processes. --unshare-net is what
+      enforces the rule that guests never reach the networking loop.
+
+  - type: generic
+    title: "multiplayer-fabric-manuals: Architecture Decision Records for the V-Sekai multiplayer fabric"
+    authors:
+      - family-names: Lee
+        given-names: "K. S. Ernest (iFire)"
+        orcid: "https://orcid.org/0000-0003-4570-1436"
+    url: "https://github.com/v-sekai-multiplayer-fabric/multiplayer-fabric-manuals"
+    notes: >-
+      Decisions of record for this repository, including rfd/0092 on
+      ReBAC planes, rfd/0094 and rfd/0095 on the guest loop and the two
+      guest classes, and rfd/0096 through rfd/0100 on measured
+      transport, storage, rollback and bandwidth budgets.
