@@ -13,9 +13,11 @@ on:
 
 env:
   FILC_VERSION: "0.682"
+  FDB_VERSION: "7.3.79" # same version real-build.yml and h2o-bench-tpcc's Dockerfile installed
 
 jobs:
   build:
+    name: build (Fil-C)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +47,16 @@ jobs:
           # zone-server-h2o *sources* build clean under Fil-C's clang;
           # full FFI linkage is tracked separately.
           echo "TODO: build/link h2o + libfdb_c against Fil-C once the FFI path is confirmed"
+
+      - name: Install FoundationDB client headers + library
+        run: |
+          # Client only (no server): zf_kv.c/test_zf_kv_multi_zone.c need
+          # fdb_c.h and libfdb_c to compile and link here, not a live
+          # cluster -- real-build.yml is the job that also installs and
+          # runs foundationdb-server.
+          curl -LSs "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_amd64.deb" -o /tmp/fdb-client.deb
+          sudo dpkg -i /tmp/fdb-client.deb || sudo apt-get install -f -qqy
+          rm /tmp/fdb-client.deb
 
       - name: Compile-check zone-server-h2o sources with Fil-C's clang
         run: |
