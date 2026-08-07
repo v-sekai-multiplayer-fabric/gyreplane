@@ -1,0 +1,20 @@
+diff --git a/src/nanosvg.h b/src/nanosvg.h
+--- a/src/nanosvg.h
++++ b/src/nanosvg.h
+@@ -120,6 +120,7 @@ typedef struct NSVGgradientStop {
+ typedef struct NSVGgradient {
+ 	float xform[6];
+ 	char spread;
++	char units;		/* NSVG_USER_SPACE or NSVG_OBJECT_SPACE */
+ 	float fx, fy;
+ 	int nstops;
+ 	NSVGgradientStop stops[1];
+@@ -910,6 +911,7 @@ static NSVGgradient* nsvg__createGradient(NSVGparser* p, const char* id, const float* localBounds, float *xform, signed char* paintType)
+ 	nsvg__xformMultiply(grad->xform, xform);
+
+ 	grad->spread = data->spread;
++	grad->units = data->units;
+ 	memcpy(grad->stops, stops, nstops*sizeof(NSVGgradientStop));
+ 	grad->nstops = nstops;
+
+

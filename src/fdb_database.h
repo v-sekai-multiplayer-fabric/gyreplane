@@ -73,6 +73,33 @@ int fdb_thread_init(fdb_global_t *fdb, h2o_loop_t *loop, fdb_thread_state_t *sta
 /* Create a transaction on the given thread's FDB database. */
 int fdb_create_transaction(fdb_thread_state_t *state, FDBTransaction **tr);
 
+/*
+ * CONTRACT FOR EVERY `cb` PASSED TO THE FOUR ASYNC FUNCTIONS BELOW
+ * (fdb_async_get, fdb_async_get_range, fdb_async_commit,
+ * fdb_handle_error) -- read this before writing a new callback:
+ *
+ *   The callback MUST NOT call fdb_future_destroy() on the FDBFuture it
+ *   receives. It does not own that future. fdb_database.c's own
+ *   future_callback() wrapper always destroys it exactly once, on every
+ *   path, immediately after the callback returns.
+ *
+ * A callback that destroys the future itself causes a double-free that
+ * segfaults inside libfdb_c.so, usually not at the call site -- this is
+ * not theoretical, it shipped once (see src/mud/mud_http.c's
+ * on_mud_turn_write_commit) and crashed the server on every MUD command.
+ *
+ * The callback still owns everything else it allocated: destroy the
+ * transaction, free your own context, send your own response.
+ *
+ * Correct reference example: zf_zonetick.c's zt_on_commit(), which reads
+ * fdb_future_get_error(future) and then never touches `future` again.
+ *
+ * Values read out of the future (e.g. the FDBKeyValue array from
+ * fdb_future_get_keyvalue_array) point into the future's own buffer and
+ * stay valid for the duration of the callback only -- copy anything that
+ * must outlive it before returning.
+ */
+
 /* Execute a get operation asynchronously. */
 int fdb_async_get(fdb_thread_state_t *state, FDBTransaction *tr,
                   const uint8_t *key, int key_len,

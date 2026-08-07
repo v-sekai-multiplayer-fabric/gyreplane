@@ -15,6 +15,9 @@
              color: #999; font-size: 0.9em; }
   #modeSelect { background: #101015; color: #d8d8d0; border: 1px solid #333;
                 padding: 0.3rem 0.5rem; font-family: inherit; }
+  /* The text UI stays the default; this is an opt-in link to the
+     three.js/SlugHorn view, which shares the same session ids. */
+  #view3dLink { color: #8fd; margin-left: auto; }
   #log { border: 1px solid #333; padding: 0.75rem; height: 60vh; overflow-y: auto;
          white-space: pre-wrap; line-height: 1.4; background: #101015; }
   #log .turn { margin-bottom: 0.75rem; }
@@ -36,6 +39,7 @@
     <option value="middleham">Middleham</option>
     <option value="the_gyre">The Gyre</option>
   </select>
+  <a id="view3dLink" href="3d.html">3D view</a>
 </div>
 <div id="log"></div>
 <form id="commandForm">

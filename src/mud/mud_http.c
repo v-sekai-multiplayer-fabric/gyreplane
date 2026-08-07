@@ -44,7 +44,11 @@ static void on_mud_turn_write_commit(FDBFuture *future, void *arg) {
         fprintf(stderr, "mud_http: FDB write failed for session %s turn %u: %s\n",
                 ctx->session_id, ctx->turn, fdb_get_error(err));
     }
-    fdb_future_destroy(future);
+    /* No fdb_future_destroy() here on purpose: fdb_database.c's own
+     * future_callback() destroys the future exactly once, right after
+     * this returns. Destroying it here too was a real double-free that
+     * segfaulted inside libfdb_c on every single MUD command. See
+     * fdb_database.h's contract note on fdb_async_commit(). */
     free(ctx);
 }
 
@@ -532,9 +536,10 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     mud_history_ctx_t *ctx = (mud_history_ctx_t *)arg;
     h2o_req_t *req = ctx->req;
 
+    /* Every path below destroys the transaction and ctx but never the
+     * future -- future_callback() owns that. See fdb_database.h. */
     fdb_error_t err = fdb_future_get_error(future);
     if (err) {
-        fdb_future_destroy(future);
         fdb_transaction_destroy(ctx->tr);
         mud_history_send_error(req, 502, fdb_get_error(err));
         free(ctx);
@@ -546,7 +551,6 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     fdb_bool_t more;
     err = fdb_future_get_keyvalue_array(future, &kvs, &count, &more);
     if (err) {
-        fdb_future_destroy(future);
         fdb_transaction_destroy(ctx->tr);
         mud_history_send_error(req, 502, "failed to parse history range");
         free(ctx);
@@ -575,7 +579,10 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     msg->body_len = buf_len;
     yajl_gen_free(gen);
 
-    fdb_future_destroy(future);
+    /* kvs points into the future's own buffer, but everything needed is
+     * already copied into `json` above (h2o_strdup into the request
+     * pool), so it is safe to stop using it here. The future itself is
+     * still future_callback()'s to destroy, not ours. */
     fdb_transaction_destroy(ctx->tr);
     free(ctx);
 
