@@ -8,6 +8,10 @@
 #include <stdint.h>
 #include <foundationdb/fdb_c.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * FoundationDB-backed guest virtual file system -- RFD 0094's item 2
  * (the capability table's storage half), with three constraints from
@@ -103,5 +107,9 @@ int64_t zf_guestfs_size(zf_guestfs_t *fs, int handle);
 int64_t zf_guestfs_stat_size(zf_guestfs_t *fs, const char *path);
 
 int zf_guestfs_unlink(zf_guestfs_t *fs, const char *path);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
