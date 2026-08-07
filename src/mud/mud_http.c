@@ -509,17 +509,34 @@ static void on_mud_history_return(h2o_multithread_receiver_t *receiver, h2o_link
 }
 
 /* Called once, from mud_http_listen() on the h2o worker thread that
- * owns `loop` -- matches RFD 0072's own registration pattern
- * (h2o_multithread_create_queue + h2o_multithread_register_receiver),
- * not something on_mud_history_range_read() (a different thread) could
- * safely do itself. */
-static void mud_history_return_init(h2o_loop_t *loop) {
-    h2o_multithread_queue_t *queue = h2o_multithread_create_queue(loop);
-    h2o_multithread_register_receiver(queue, &g_mud_history_receiver, on_mud_history_return);
+ * owns `ctx`, registering on ctx->queue -- h2o.h's own comment on
+ * h2o_context_t::queue calls it "queue for receiving messages from
+ * other contexts". h2o_multithread_create_queue() is a real, valid
+ * public API (a process can have more than one queue), so making an
+ * independent second queue here was not itself the bug -- reusing
+ * ctx->queue is just the more idiomatic choice, matching what h2o's
+ * own field comment says it is for. Confirmed NOT the cause of the
+ * "Assertion !h2o_linklist_is_linked(&message->link) failed" crash
+ * production hit: switching to ctx->queue alone did not stop the
+ * crash under the same repeated-traffic test that reproduced it. The
+ * real cause was mud_history_send_error()'s own bug -- see its
+ * comment. */
+static void mud_history_return_init(h2o_context_t *ctx) {
+    h2o_multithread_register_receiver(ctx->queue, &g_mud_history_receiver, on_mud_history_return);
 }
 
 static void mud_history_send_error(h2o_req_t *req, int status, const char *message) {
-    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)malloc(sizeof(*msg));
+    /* calloc, not malloc: h2o_multithread_message_t embeds an
+     * h2o_linklist_t (super.link), and h2o_linklist_is_linked() (the
+     * assertion h2o_multithread_send_message() runs before linking)
+     * checks link.next != NULL -- malloc's uninitialized bytes are
+     * not reliably NULL, so this asserted and crashed the process on
+     * real production traffic ("Assertion !h2o_linklist_is_linked
+     * (&message->link) failed"), not a theoretical concern. h2o.h's
+     * own linklist.h says heads need h2o_linklist_init_anchor(); a
+     * plain zero-fill satisfies the same next==NULL check more simply
+     * for a node that isn't a list head. */
+    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)calloc(1, sizeof(*msg));
     msg->req = req;
     msg->status = status;
     /* strdup, not the message's own storage -- fdb_get_error() returns
@@ -571,7 +588,7 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     size_t buf_len;
     yajl_gen_get_buf(gen, &buf, &buf_len);
 
-    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)malloc(sizeof(*msg));
+    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)calloc(1, sizeof(*msg)); /* see mud_history_send_error()'s own comment on why calloc, not malloc */
     msg->req = req;
     msg->status = 200;
     msg->body = (char *)malloc(buf_len);
@@ -580,9 +597,9 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     yajl_gen_free(gen);
 
     /* kvs points into the future's own buffer, but everything needed is
-     * already copied into `json` above (h2o_strdup into the request
-     * pool), so it is safe to stop using it here. The future itself is
-     * still future_callback()'s to destroy, not ours. */
+     * already copied into msg->body above, so it is safe to stop using
+     * it here. The future itself is still future_callback()'s to
+     * destroy, not ours. */
     fdb_transaction_destroy(ctx->tr);
     free(ctx);
 
@@ -717,12 +734,14 @@ int mud_http_listen(h2o_context_t *ctx, h2o_loop_t *loop, int port, const char *
     g_mud_accept_ctx.hosts = ctx->globalconf->hosts;
     g_mud_accept_ctx.ssl_ctx = NULL;
 
-    /* Registers g_mud_history_receiver on this thread's own loop --
-     * this is the h2o worker thread that will own every h2o_req_t the
-     * MUD HTTP paths see, matching mud_http_register()'s one-listener-
+    /* Registers g_mud_history_receiver on ctx's own queue -- this is
+     * the h2o worker thread that will own every h2o_req_t the MUD
+     * HTTP paths see, matching mud_http_register()'s one-listener-
      * on-zone-0 convention. See on_mud_history_range_read()'s own
-     * comment for why this hand-off exists at all. */
-    mud_history_return_init(loop);
+     * comment for why this hand-off exists at all, and
+     * mud_history_return_init()'s own comment for why it registers on
+     * ctx->queue rather than a second, independent queue. */
+    mud_history_return_init(ctx);
 
     if (cert_file != NULL && key_file != NULL) {
         if (setup_tls(cert_file, key_file) != 0) {
