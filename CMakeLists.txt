@@ -56,6 +56,13 @@ enable_language(CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(RISCV_BINARY_TRANSLATION OFF CACHE BOOL "" FORCE)
+# libriscv's syscall handler table defaults to 512 entries, which is
+# below src/sandbox/zone_abi.h's 600 block. Found by the kv_smoke
+# guest, not predicted: the ecall threw
+# "array::at: __n (which is 600) >= _Nm (which is 512)". 1024 keeps
+# 600 valid and leaves godot-sandbox's own 500 block untouched, so a
+# guest can speak both ABIs.
+add_compile_definitions(RISCV_SYSCALLS_MAX=1024)
 add_subdirectory(thirdparty/libriscv/lib)
 
 file(GLOB_RECURSE HANDLER_SOURCES "src/handlers/*.c")

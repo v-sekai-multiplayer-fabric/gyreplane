@@ -147,6 +147,25 @@ static void ecall_entropy(SandboxMachine &m)
     m.set_result((int64_t)len);
 }
 
+/*
+ * Object store, declared in the ABI and not yet implemented.
+ *
+ * ZONE_OBJ_GET reads immutable content-addressed bytes from the CDN /
+ * casync / S3 tier. ZONE_OBJ_PUT publishes, and a guest holds no such
+ * capability on its own: it needs a ReBAC delegation edge to a
+ * principal that holds admin capability, and the publish is
+ * attributed to that principal (rfd/0095).
+ *
+ * Both answer -ENOSYS until the backing store lands. That is the same
+ * answer the catch-all would give, but stated here on purpose, so a
+ * guest developer reading the log sees "not built yet" rather than
+ * "wrong syscall number".
+ */
+static void ecall_obj_unimplemented(SandboxMachine &m)
+{
+    m.set_result(-ENOSYS);
+}
+
 /* --- guest console ---------------------------------------------------- */
 
 /*
@@ -259,6 +278,8 @@ static void *guest_thread_main(void *varg)
         SandboxMachine::install_syscall_handler(ZONE_KV_LIST, ecall_kv_list);
         SandboxMachine::install_syscall_handler(ZONE_PRINT, ecall_print);
         SandboxMachine::install_syscall_handler(ZONE_ENTROPY, ecall_entropy);
+        SandboxMachine::install_syscall_handler(ZONE_OBJ_GET, ecall_obj_unimplemented);
+        SandboxMachine::install_syscall_handler(ZONE_OBJ_PUT, ecall_obj_unimplemented);
 
         /*
          * Anything else returns -ENOSYS instead of killing the guest.

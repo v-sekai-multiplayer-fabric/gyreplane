@@ -22,9 +22,13 @@
  *               Values are capped well under FDB's own limits so no
  *               chunking layer is needed or wanted.
  *
- *   ZONE_OBJ_*  The object store (CDN / casync / S3). Immutable,
- *               content-addressed, arbitrarily large, read-only to a
- *               guest. Assets, packs, and anything a hash names.
+ *   ZONE_OBJ_*  The object store, which is aria-storage: casync
+ *               content-defined chunking, .caibx/.caidx indexes, zstd
+ *               chunks, over a local cache or S3. Immutable and
+ *               deduplicated across every asset that shares chunks --
+ *               the property that matters most for user-generated
+ *               content, where a thousand uploads are mostly the same
+ *               bytes.
  *
  * Putting content in FDB would pay transaction cost, replication, and
  * quota for bytes that never change and are identical in every zone.
@@ -117,10 +121,16 @@
 /*
  * ZONE_OBJ_GET(id_ptr, id_len, buf_ptr, buf_len, offset) -> length
  *
- * Reads from the object store by content id (a hash string, the same
- * name casync and any content-addressed CDN already use). Returns the
- * FULL object length, so a guest can size a buffer from one call and
- * page a large object with `offset`.
+ * Reads assembled object bytes. The id names a casync index
+ * (.caibx/.caidx), NOT a whole-blob hash: the host resolves that
+ * index's chunks through aria-storage, from the local chunk cache
+ * first and the S3 backend second, and assembles the range the guest
+ * asked for. Returns the FULL object length, so a guest can size a
+ * buffer from one call and page a large object with `offset`.
+ *
+ * Naming an index rather than a blob is what buys deduplication: two
+ * assets that differ slightly share nearly all their chunks, and the
+ * host stores and transfers each chunk once.
  *
  * Immutability is what makes this cheap: the host can cache an object
  * on local disk forever, share one copy across every zone and every
@@ -132,7 +142,10 @@
 /*
  * ZONE_OBJ_PUT(buf_ptr, len, id_out_ptr, id_out_len) -> id length
  *
- * Publishes an object and writes its content id into id_out.
+ * Publishes an object and writes its casync index id into id_out.
+ * The host chunks the bytes, stores only chunks the store does not
+ * already hold, and writes the index -- so republishing a small edit
+ * of a large asset costs the edit, not the asset.
  *
  * A guest does not hold this capability itself. Publishing is an
  * admin-plane action (rfd/0092's CAN_GRANT plane), and a guest never
