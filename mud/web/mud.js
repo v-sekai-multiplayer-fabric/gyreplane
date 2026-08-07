@@ -1,25 +1,44 @@
-// Middleham MUD website UI. No accounts, no login (per the project's
-// own "no need for oauth" decision) -- a random session id is minted
-// once in this browser and reused, matching what src/mud/mud_session.c
-// expects as a session_id string.
+// Middleham / The Gyre MUD website UI. No accounts, no login (per the
+// project's own "no need for oauth" decision) -- a random session id
+// is minted once per setting in this browser and reused, matching
+// what src/mud/mud_session.c expects as a session_id string.
+//
+// Mode selector (RFD 0085, multiplayer-fabric-manuals): #modeSelect
+// picks "middleham" (default) or "the_gyre". Each setting gets its
+// own session id, since the server only reads a session's domain
+// once, on that session id's first request (mud_session.c's own
+// get-or-create semantics) -- reusing one session id across settings
+// would silently keep whichever domain created it.
 
 (function () {
   "use strict";
 
-  const SESSION_KEY = "mud_session_id";
-  function getOrCreateSessionId() {
-    let id = localStorage.getItem(SESSION_KEY);
+  const MODE_KEY = "mud_mode";
+  const TITLES = { middleham: "Middleham", the_gyre: "The Gyre" };
+
+  function sessionKeyFor(mode) {
+    return "mud_session_id_" + mode;
+  }
+
+  function getOrCreateSessionId(mode) {
+    const key = sessionKeyFor(mode);
+    let id = localStorage.getItem(key);
     if (!id) {
       id = "web-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-      localStorage.setItem(SESSION_KEY, id);
+      localStorage.setItem(key, id);
     }
     return id;
   }
-  const sessionId = getOrCreateSessionId();
 
+  const modeSelect = document.getElementById("modeSelect");
+  const titleEl = document.getElementById("title");
   const logEl = document.getElementById("log");
   const form = document.getElementById("commandForm");
   const input = document.getElementById("commandInput");
+
+  let mode = localStorage.getItem(MODE_KEY) || "middleham";
+  let sessionId = getOrCreateSessionId(mode);
+  modeSelect.value = mode;
 
   function appendTurn(text, meta, invalid) {
     const div = document.createElement("div");
@@ -62,6 +81,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
+          domain: mode,
           command: parsed.command,
           args: parsed.args,
           message: parsed.message,
@@ -88,26 +108,12 @@
     if (raw.trim()) sendCommand(raw);
   });
 
-  // Live push channel. Task #29 wires the server side's actual content
-  // (currently the connection opens and stays open, per
-  // src/mud/mud_http.c's own documented on_mud_stream() stub) -- this
-  // client side is real and ready for it: any future "data:" frame
-  // just gets appended the same way a command's own response does.
-  try {
-    const stream = new EventSource("/api/mud/stream");
-    stream.onmessage = function (ev) {
-      appendTurn(ev.data, "live update");
-    };
-  } catch (err) {
-    // EventSource not supported or the connection failed -- the UI
-    // still works via plain request/response, so this is not fatal.
-  }
-
   // Real history, not a placeholder: GET /api/mud/history returns every
   // past turn's own narration for this session_id, straight from FDB
-  // (src/mud/mud_kv.c's zf/mud/turn/ keyspace). Loaded once on page
-  // load, so refreshing the page (or opening the same session_id in a
-  // new tab) shows what already happened instead of starting blank.
+  // (src/mud/mud_kv.c's zf/mud/turn/ keyspace). Loaded once per mode
+  // switch (and on page load), so refreshing the page, or switching
+  // back to a setting already played, shows what already happened
+  // instead of starting blank.
   async function loadHistory() {
     try {
       const resp = await fetch("/api/mud/history?session_id=" + encodeURIComponent(sessionId));
@@ -119,7 +125,42 @@
       // live session still works without history, so this is not fatal.
     }
   }
-  loadHistory();
 
-  appendTurn("Connected. Type a command below and press Send.", "session " + sessionId);
+  let liveStream = null;
+
+  function startLiveStream() {
+    if (liveStream) liveStream.close();
+    // Task #29 wires the server side's actual content (currently the
+    // connection opens and stays open, per src/mud/mud_http.c's own
+    // documented on_mud_stream() stub) -- this client side is real
+    // and ready for it: any future "data:" frame just gets appended
+    // the same way a command's own response does.
+    try {
+      liveStream = new EventSource("/api/mud/stream?session_id=" + encodeURIComponent(sessionId));
+      liveStream.onmessage = function (ev) {
+        appendTurn(ev.data, "live update");
+      };
+    } catch (err) {
+      // EventSource not supported or the connection failed -- the UI
+      // still works via plain request/response, so this is not fatal.
+    }
+  }
+
+  function enterMode(nextMode) {
+    mode = nextMode;
+    localStorage.setItem(MODE_KEY, mode);
+    sessionId = getOrCreateSessionId(mode);
+    titleEl.textContent = TITLES[mode] || mode;
+    document.title = TITLES[mode] || mode;
+    logEl.innerHTML = "";
+    loadHistory();
+    startLiveStream();
+    appendTurn("Connected. Type a command below and press Send.", "session " + sessionId);
+  }
+
+  modeSelect.addEventListener("change", function () {
+    enterMode(modeSelect.value);
+  });
+
+  enterMode(mode);
 })();

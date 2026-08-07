@@ -24,7 +24,7 @@ static mud_cbor_buf_t finish_encode(QCBOREncodeContext *ctx, uint8_t *storage, s
     return buf;
 }
 
-mud_cbor_buf_t mud_cbor_encode_boot_config(int64_t seed, const char *objective, const char *marked_target, int64_t max_turns) {
+mud_cbor_buf_t mud_cbor_encode_boot_config(int64_t seed, const char *domain, const char *objective, const char *marked_target, int64_t max_turns) {
     size_t cap = 512;
     uint8_t *storage = (uint8_t *)malloc(cap);
     QCBOREncodeContext ctx;
@@ -33,6 +33,14 @@ mud_cbor_buf_t mud_cbor_encode_boot_config(int64_t seed, const char *objective, 
     QCBOREncode_AddSZStringToMapSZ(&ctx, "@context", "https://v-sekai-multiplayer-fabric.dev/mud/v1");
     QCBOREncode_AddSZStringToMapSZ(&ctx, "@type", "MudBootConfig");
     QCBOREncode_AddInt64ToMapSZ(&ctx, "seed", seed);
+    /* domain: "middleham" (default) or "the_gyre" (RFD 0085 in
+     * multiplayer-fabric-manuals) -- selects which room set and
+     * objective mud_guest.cpp's mud_boot() starts. Omitted entirely
+     * when NULL/empty so an older guest binary that predates this
+     * field still boots the same way it always did. */
+    if (domain != NULL && domain[0] != '\0') {
+        QCBOREncode_AddSZStringToMapSZ(&ctx, "domain", domain);
+    }
     QCBOREncode_AddSZStringToMapSZ(&ctx, "objective", objective);
     if (marked_target != NULL && marked_target[0] != '\0') {
         QCBOREncode_AddSZStringToMapSZ(&ctx, "marked_target", marked_target);

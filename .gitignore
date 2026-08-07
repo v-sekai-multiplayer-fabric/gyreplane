@@ -5,6 +5,8 @@ build_tools/
 mud/orchestrator/mud-sandbox-orchestrator
 mud/guest/*.elf
 mud/guest/*.o
+mud/guest/test/*.o
+mud/guest/test/gyre_smoke_test
 
 # root-level fly.toml is a deploy-time copy of fly/fly.toml (flyctl
 # resolves the Containerfile path relative to -c's own directory,

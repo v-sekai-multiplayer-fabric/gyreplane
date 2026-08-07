@@ -32,7 +32,7 @@ void mud_session_init(const char *orchestrator_path, const char *guest_elf_path)
  * and sends it a real mud_boot() CBOR frame (seed derived from the
  * session id's hash, objective as given) if none exists yet. Returns
  * NULL on a real spawn/boot failure. */
-mud_session_t *mud_session_get_or_create(const char *session_id, const char *objective);
+mud_session_t *mud_session_get_or_create(const char *session_id, const char *domain, const char *objective);
 
 /* Sends one mud_step() CBOR command frame, blocks for the matching
  * response frame. *out is malloc()'d, caller frees it. Returns 0 on

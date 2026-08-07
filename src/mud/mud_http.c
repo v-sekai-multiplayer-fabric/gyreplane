@@ -84,9 +84,14 @@ typedef struct {
     char args[MUD_HTTP_MAX_ARGS][64];
     size_t n_args;
     char message[256];
+    /* "middleham" (default) or "the_gyre" -- only consulted on the
+     * first request for a given session_id, per mud_session.c's own
+     * get-or-create semantics; an existing session ignores it, the
+     * same way it already ignores a resent objective. */
+    char domain[32];
     /* Parser state: which top-level field the next string/array
      * belongs to. */
-    enum { FIELD_NONE, FIELD_SESSION_ID, FIELD_COMMAND, FIELD_ARGS, FIELD_MESSAGE } current_field;
+    enum { FIELD_NONE, FIELD_SESSION_ID, FIELD_COMMAND, FIELD_ARGS, FIELD_MESSAGE, FIELD_DOMAIN } current_field;
     bool in_args_array;
 } mud_command_request_t;
 
@@ -103,6 +108,9 @@ static int on_map_key(void *ctx, const unsigned char *key, size_t len) {
     }
     else if (len == 7 && memcmp(key, "message", 7) == 0) {
         req->current_field = FIELD_MESSAGE;
+    }
+    else if (len == 6 && memcmp(key, "domain", 6) == 0) {
+        req->current_field = FIELD_DOMAIN;
     }
     else {
         req->current_field = FIELD_NONE;
@@ -121,6 +129,9 @@ static int on_string(void *ctx, const unsigned char *val, size_t len) {
         break;
     case FIELD_MESSAGE:
         snprintf(req->message, sizeof(req->message), "%.*s", (int)len, val);
+        break;
+    case FIELD_DOMAIN:
+        snprintf(req->domain, sizeof(req->domain), "%.*s", (int)len, val);
         break;
     case FIELD_ARGS:
         if (req->in_args_array && req->n_args < MUD_HTTP_MAX_ARGS) {
@@ -223,10 +234,13 @@ static int on_mud_command(h2o_handler_t *self, h2o_req_t *req) {
         return 0;
     }
 
-    /* Objective is fixed at "gain_watch_trust" for this prototype's
-     * first session-create call -- a real objective picker is website-
-     * UI scope, not this handler's. Existing sessions ignore it. */
-    mud_session_t *session = mud_session_get_or_create(parsed.session_id, "gain_watch_trust");
+    /* domain picks the objective too, so the website's mode selector
+     * (mud/web/index.html) only has to send one field, not both.
+     * Existing sessions ignore both, per mud_session.c's own
+     * get-or-create semantics. */
+    const char *domain = parsed.domain[0] != '\0' ? parsed.domain : "middleham";
+    const char *objective = (strcmp(domain, "the_gyre") == 0) ? "explore_gyre" : "gain_watch_trust";
+    mud_session_t *session = mud_session_get_or_create(parsed.session_id, domain, objective);
     if (session == NULL) {
         send_json_error(req, 503, "could not create or reach mud session");
         return 0;
