@@ -85,8 +85,10 @@ int fdb_create_transaction(fdb_thread_state_t *state, FDBTransaction **tr);
  *
  * A callback that destroys the future itself causes a double-free that
  * segfaults inside libfdb_c.so, usually not at the call site -- this is
- * not theoretical, it shipped once (see src/mud/mud_http.c's
- * on_mud_turn_write_commit) and crashed the server on every MUD command.
+ * not theoretical, it shipped once (the MUD prototype's own
+ * on_mud_turn_write_commit, back when that code lived in this repo's
+ * src/mud/mud_http.c; see zone-guest-middleham's history for it now)
+ * and crashed the server on every MUD command.
  *
  * The callback still owns everything else it allocated: destroy the
  * transaction, free your own context, send your own response.

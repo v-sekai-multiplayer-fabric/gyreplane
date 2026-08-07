@@ -44,26 +44,20 @@ set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(cmake/picoquic.cmake)
-include(cmake/qcbor.cmake)
 
 file(GLOB_RECURSE HANDLER_SOURCES "src/handlers/*.c")
 file(GLOB SOURCES "src/*.c")
 file(GLOB TRANSPORT_SOURCES "src/transport/*.c")
 file(GLOB GEN_SOURCES "src/gen/*.c")
 file(GLOB PHYSICS_SOURCES "src/physics/*.c")
-# mud/: the CrucibleBench Middleham MUD prototype's zone-server-h2o
-# side (mud_cbor.c/mud_session.c/mud_http.c) -- not the guest/
-# orchestrator, which build separately (mud/guest/, mud/orchestrator/,
-# see their own README.md).
-file(GLOB MUD_SOURCES "src/mud/*.c")
 
-add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES} ${GEN_SOURCES} ${PHYSICS_SOURCES} ${MUD_SOURCES})
+add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES} ${GEN_SOURCES} ${PHYSICS_SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     src ${CMAKE_BINARY_DIR} ${H2O_INCLUDE} ${OPENSSL_INCLUDE} ${FDB_INCLUDE} ${YAJL_INCLUDE})
 target_compile_definitions(${PROJECT_NAME} PRIVATE H2O_USE_LIBUV=0)
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS} ${WARNING_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored qcbor_vendored m)
+    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored m)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
