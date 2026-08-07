@@ -89,6 +89,24 @@ references:
       Runs engine guests as separate processes. --unshare-net is what
       enforces the rule that guests never reach the networking loop.
 
+  - type: software
+    title: CrucibleBench_Phase1
+    authors:
+      - name: CrucibleBench
+    url: "https://github.com/CrucibleBench/CrucibleBench_Phase1"
+    license: MIT
+    notes: >-
+      Source of the Middleham MUD scenario that was ported to
+      mud/guest/mud_guest.cpp: Source_Code/state_machine.py's
+      MiddlehamStateMachine (rooms, NPCs, items, commands, trust and
+      suspicion, objectives) and Source_Code/classifier.py's
+      _fallback_classification(). The port deviated in one documented
+      way, using a ChaCha20 PRNG in place of CPython's Mersenne
+      Twister. Commit f96d5b2da removed the MUD subsystem, so that file
+      is no longer in the tree. This entry stays. Credit for work that
+      shaped a project does not expire when the derived file is
+      deleted, and a reader of the history needs the provenance.
+
   - type: generic
     title: "multiplayer-fabric-manuals: Architecture Decision Records for the V-Sekai multiplayer fabric"
     authors:
