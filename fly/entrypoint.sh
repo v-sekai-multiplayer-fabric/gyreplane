@@ -13,7 +13,7 @@
 # Also wires real mutual TLS between zone-server-h2o (as an FDB
 # client) and the FDB cluster -- the actual trust boundary this
 # deployment has, since zone-to-zone fabric coordination itself is not
-# implemented yet (docs/0001-defer-nogod-gossip-authority.md). Without
+# implemented yet (multiplayer-fabric-manuals rfd/0086). Without
 # this, client<->cluster traffic is plaintext, same-VM trust only.
 set -e
 

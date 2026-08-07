@@ -31,7 +31,7 @@
  * internally looping over several zones. This process now handles
  * exactly one zone, whose z_id is supplied at startup (see main.c's
  * -z<zone_id> flag). Coordinating many such processes/zones is
- * `docs/0001-defer-nogod-gossip-authority.md`'s gossip/VClock question
+ * `multiplayer-fabric-manuals rfd/0086`'s gossip/VClock question
  * -- still real work, not yet done, but now correctly scoped as
  * "multiple processes, multiple zones, 1-1" instead of folded into a
  * single-process loop that never needed it. */
