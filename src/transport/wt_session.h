@@ -23,7 +23,7 @@
  *
  * Path: zone-server-h2o serves exactly one WebTransport path,
  * ZONE_WT_PATH below -- there is no multi-endpoint routing need yet
- * (matches docs/0001-defer-nogod-gossip-authority.md's single-zone
+ * (matches multiplayer-fabric-manuals rfd/0086's single-zone
  * scope).
  */
 

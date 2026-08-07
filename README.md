@@ -18,12 +18,9 @@ flag, not a hardcoded value.
 A zone fabric means multiple processes. Each process runs one zone (1
 process : 1 zone). This matches `zone-server/AGENTS.md`'s deployment
 shape: one UDP port per zone instance, up to 100 concurrent zones.
-Avatar IK (`sinew-mocap/solve`'s `Align.lean`) is wired and tested.
-Entity and prop physics used MuJoCo for a while; that dependency is
-dropped now in favor of Godot's own Jolt physics (see
-`docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`'s Revision 3).
-The vendored MuJoCo build and its `mj_physics.c` wiring moved to
-`v-sekai-multiplayer-fabric/mujoco-riscv64`.
+Avatar IK (`sinew-mocap/solve`'s `Align.lean`) is wired and tested; see
+`rfd/0087` for that decision, and why MuJoCo was dropped for Godot's own
+Jolt physics.
 
 Three items are not done yet:
 - The TLS cert and key are still `NULL`/`NULL`, so the server is
@@ -61,85 +58,36 @@ left unchecked.
 
 Coordinating many zone-server-h2o processes is a distinct, larger question.
 Two examples of this: deciding which process owns which zone, and moving
-an entity from one zone's process to another. This question is tracked in
-`docs/0001-defer-nogod-gossip-authority.md`. The team deliberately deferred
-this question. The team needs to revisit it now: the deployment model is
-confirmed as multiple processes, not a single process looping over several
-zones.
+an entity from one zone's process to another. `rfd/0086` tracks this
+question and deliberately defers it. The team needs to revisit it now: the
+deployment model is confirmed as multiple processes, not a single process
+looping over several zones.
 
 ## Design provenance
 
-- Event loop, worker pool, FDB async plumbing, SPSC ring: ported as-is from
-  `h2o-bench-tpcc`'s `src/` (RFD 0005 actor-lite architecture, RFD 0011 async
-  FDB callback chain).
-- **Transport is `picoquic` + `picotls`, not `h2o`'s own QUIC stack.**
-  `h2o` (pinned by `h2o-bench-tpcc`) has no WebTransport or datagram support
-  at all. A search of its source tree confirms this. The Godot client's
-  `WebTransportPeer` (`V-Sekai-fire/multiplayer-fabric-build`,
-  `godot/modules/http3/`) is built on vendored `picoquic` + `picotls`, which
-  *does* have working WebTransport, datagrams, and MASQUE support
-  (`picohttp/webtransport.c`, `picoquictest/datagram_tests.c`,
-  `picohttp/picomask.c`). `thirdparty/picoquic` and `thirdparty/picotls` here
-  are git subtrees checked in at the exact commits that fork vendors
-  (`790e973b`, `3b4d709f`). This way, client and server share one proven
-  QUIC stack. See `cmake/picoquic.cmake` (mirrors that module's `SCsub`),
-  `src/transport/webtransport_server.c` (the QUIC transport bridge into
-  h2o's evloop), and `src/transport/wt_session.c` (H3/WebTransport session
-  negotiation on top of it, task #12).
-- Entity, migration, ghost, and journal shape: modeled on the real (if
-  never-yet-invoked) `FabricZone` C++ engine in
-  `V-Sekai-fire/multiplayer-fabric-build`, not built from a blank slate.
-- Physics: used [MuJoCo](https://github.com/google-deepmind/mujoco) 3.11.0
-  for entity and prop contact physics (collisions, joints, forces) for a
-  while. Dropped in favor of Godot's own Jolt physics -- see
-  `docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`'s Revision 3.
-  The vendored build moved to
-  [`v-sekai-multiplayer-fabric/mujoco-riscv64`](https://github.com/v-sekai-multiplayer-fabric/mujoco-riscv64).
-- Avatar IK and posing: [`sinew-mocap/solve`](https://github.com/sinew-mocap/solve)'s
-  own `Align.lean` (Kabsch-style rotation fitting, in `src/gen/sinew_align.c`),
-  not `kevinzakka/mink`'s QP-based approach. The team evaluated `mink` and
-  deferred it (`docs/0002-defer-mink-port-keep-sinew-mocap-solve.md`). A test
-  against `Align.lean`'s own `AlignTest.lean` known-rotation-recovery check
-  verifies this port. The result matches the exact expected value in
-  floating-point arithmetic, not just a value within tolerance.
-- Entity and ReBAC types: generated from `lean-entity-packet` and
-  `lean-rebac-core`, not hand-duplicated per language.
-  `src/gen/xr_grid_entity_packet.{c,h}` is a direct C transcription of
-  `lean-entity-packet`'s `EntityPacket/Codec.lean` (a 100-byte packet,
-  little-endian, no floats on the wire). A differential test checks it
-  against that repo's 64 Plausible-verified golden vectors
-  (`test/unit/test_xr_grid_entity_packet.c`, a byte-identical round-trip
-  check, not just a field-equality check). This codec is now the real
-  storage type in `zf_kv.h`'s `zf_entity_val_t`. The float-double
-  placeholder is gone.
+This repo's design decisions live as RFDs in
+[`multiplayer-fabric-manuals`](https://github.com/v-sekai-multiplayer-fabric/multiplayer-fabric-manuals/tree/main/rfd),
+not inline here:
 
-  `zf_zonetick.c` ticks in fixed-tick integer micrometers, to match the
-  wire's actual meaning: velocity is a per-tick displacement, not a
-  continuous rate.
+- `rfd/0083`: replaces the Godot `FabricZone` engine with this repo, and
+  the overall entity/migration/ghost/journal shape it carries forward.
+- `rfd/0086`: defers porting `NoGod.lean`'s gossip zone authority.
+- `rfd/0087`: avatar IK uses `sinew-mocap/solve`'s `Align.lean`, not
+  `kevinzakka/mink`; also the MuJoCo-to-Jolt physics drop.
+- `rfd/0088`: transport is `picoquic` + `picotls`, not `h2o`'s own
+  (absent) QUIC stack.
+- `rfd/0005`, `rfd/0011`: the actor-lite architecture and async FDB
+  callback chain the event loop, worker pool, and SPSC ring port as-is
+  from `h2o-bench-tpcc`'s `src/`.
 
-  `src/gen/rebac.{c,h}` ports `lean-rebac-core`'s `Rebac/core/ReBAC.lean`
-  `rebacCheck`, a pure predicate over `Relation`/`Action` ranks. Tests
-  check it against the Lean source's own proved theorems
-  (`rebac_empty_denied`, `rebac_public_observe`, the owner-only `.modify`
-  boundary). This predicate is not wired into the transport layer yet.
-  The geometric-authority routing it depends on ("which zone evaluates
-  the check") is task #8/#9's zone-authority work.
-
-  `Rebac/core/NoGod.lean`, which `ReBAC.lean` imports, turned out to be a
-  much bigger find than task #13 alone. It is a gossip-based,
-  coordinator-free vector-clock consensus system for zone authority and
-  interest. This system is directly relevant to the multiple-processes
-  coordination question above. The team has not acted on it yet.
-- Memory safety: built with [Fil-C](https://github.com/pizlonator/fil-c) in
-  CI (`.github/workflows/build-filc.yml`, task #3). This process parses
-  untrusted WebTransport input directly from clients. The FFI boundary
-  against `h2o`/`libfdb_c` (both still stock-compiled) is not resolved yet.
-
-Design decisions land as dated entries in
-[`multiplayer-fabric-manuals/decisions/`](https://github.com/v-sekai-multiplayer-fabric/multiplayer-fabric-manuals/tree/main/decisions),
-not in a local `rfd/` folder. See that repo for the carried-over RFD content
-(zonefabric scaling, actor-lite architecture, FDB keyspace design, PERT
-critical path, and so on) once ported.
+Entity and ReBAC types generate from `lean-entity-packet` and
+`lean-rebac-core`, not hand-duplicated per language
+(`src/gen/xr_grid_entity_packet.{c,h}`, `src/gen/rebac.{c,h}`), each
+checked against that source Lean repo's own proved theorems or golden
+vectors. Memory safety is built with
+[Fil-C](https://github.com/pizlonator/fil-c) in CI
+(`.github/workflows/build-filc.yml`); the FFI boundary against
+`h2o`/`libfdb_c` (both still stock-compiled) is not resolved yet.
 
 ## Build
 
