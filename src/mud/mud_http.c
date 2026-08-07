@@ -239,9 +239,9 @@ static int on_mud_command(h2o_handler_t *self, h2o_req_t *req) {
     }
 
     /* domain picks the objective too, so the website's mode selector
-     * (mud/web/index.html) only has to send one field, not both.
-     * Existing sessions ignore both, per mud_session.c's own
-     * get-or-create semantics. */
+     * (mud/web/index.html, the 3D view -- the only MUD web UI now)
+     * only has to send one field, not both. Existing sessions ignore
+     * both, per mud_session.c's own get-or-create semantics. */
     const char *domain = parsed.domain[0] != '\0' ? parsed.domain : "middleham";
     const char *objective = (strcmp(domain, "the_gyre") == 0) ? "explore_gyre" : "gain_watch_trust";
     mud_session_t *session = mud_session_get_or_create(parsed.session_id, domain, objective);
