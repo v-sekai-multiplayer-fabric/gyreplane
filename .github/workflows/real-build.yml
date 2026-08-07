@@ -31,6 +31,7 @@ env:
 
 jobs:
   build:
+    name: build (real, stock clang)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
