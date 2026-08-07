@@ -1,0 +1,953 @@
+//vimrun! ./slughorn-test-canvas
+//
+// Canvas API demonstration: all commit patterns.
+//
+// There are three path-commit verbs:
+//
+// fill(color, scale, key?) - commit as colored Layer
+// stroke(width, color, scale, key?) - expand + commit as colored Layer
+// defineShape(key, scale) - commit as geometry only (no Layer, no color)
+//
+// And one composite-commit verb:
+//
+// finalize() - return in-progress CompositeShape, reset state
+// finalize(key) - register CompositeShape in Atlas + reset
+//
+// strokePath(width) is the in-place path transformer for the rare case
+// where you need the raw outline before deciding how to commit it.
+//
+// +-------------------------+---------------------------------+------------------------------+
+// |           Key           |              Type               |           Pattern            |
+// +-------------------------+---------------------------------+------------------------------+
+// | s_0                     | shape (auto-key)                | 1 - fill auto-key            |
+// +-------------------------+---------------------------------+------------------------------+
+// | tri_composite           | composite [s_0]                 | 1                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | circle_shape            | shape (named)                   | 2 - fill named               |
+// +-------------------------+---------------------------------+------------------------------+
+// | circle_composite        | composite [circle_shape]        | 2                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | s_1..s_3                | shapes (auto-key)               | 3 - multi-layer auto         |
+// +-------------------------+---------------------------------+------------------------------+
+// | three_layer             | composite [s_1, s_2, s_3]       | 3                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | badge_bg, badge_bar     | shapes (named)                  | 4 - multi-layer named        |
+// +-------------------------+---------------------------------+------------------------------+
+// | badge_composite         | composite [badge_bg, badge_bar] | 4                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | rrect_geom              | shape (geometry-only)           | 5 - defineShape              |
+// +-------------------------+---------------------------------+------------------------------+
+// | s_4                     | shape (auto-key stroke)         | 6 - stroke commit            |
+// +-------------------------+---------------------------------+------------------------------+
+// | scurve_stroke_composite | composite [s_4]                 | 6                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | zigzag_stroke           | shape (named stroke)            | 7 - stroke named             |
+// +-------------------------+---------------------------------+------------------------------+
+// | scurve_outline_geom     | shape (geometry-only)           | 8 - strokePath + defineShape |
+// +-------------------------+---------------------------------+------------------------------+
+// | stadium_arcto           | shape (named)                   | 9 - arcTo                    |
+// +-------------------------+---------------------------------+------------------------------+
+// | stadium_composite       | composite [stadium_arcto]       | 9                            |
+// +-------------------------+---------------------------------+------------------------------+
+// | three_rect_raw          | shape (named)                   | 19 - multi-subpath raw cmds  |
+// +-------------------------+---------------------------------+------------------------------+
+// | three_rect_raw_comp     | composite [three_rect_raw]      | 19                           |
+// +-------------------------+---------------------------------+------------------------------+
+// | three_rect_helpers      | shape (named)                   | 20 - multi-subpath rect()    |
+// +-------------------------+---------------------------------+------------------------------+
+// | three_rect_helpers_comp | composite [three_rect_helpers]  | 20                           |
+// +-------------------------+---------------------------------+------------------------------+
+// | add_path_xform          | shape (named)                   | 21 - addPath(p, transform)   |
+// +-------------------------+---------------------------------+------------------------------+
+// | add_path_xform_comp     | composite [add_path_xform]      | 21                           |
+// +-------------------------+---------------------------------+------------------------------+
+
+#include "slughorn/canvas.hpp"
+
+#ifndef SLUGHORN_HAS_SERIAL
+#  error "This test requires SLUGHORN_SERIAL=ON"
+#endif
+
+#include "slughorn/serial.hpp"
+
+#include <fstream>
+#include <iostream>
+
+using namespace slughorn::literals;
+using slughorn::Color;
+using slughorn::Key;
+using slughorn::slug_t;
+
+// All shapes authored in [0, 1] em-space; scale = 1.0 throughout.
+static const Color RED = {1_cv, 0_cv, 0_cv, 1_cv};
+static const Color GREEN = {0_cv, 0.6_cv, 0_cv, 1_cv};
+static const Color BLUE = {0_cv, 0_cv, 1_cv, 1_cv};
+static const Color WHITE = {1_cv, 1_cv, 1_cv, 1_cv};
+static const Color CYAN = {0_cv, 0.8_cv, 0.8_cv, 1_cv};
+static const Color GOLD = {1_cv, 0.75_cv, 0_cv, 1_cv};
+
+int main(int argc, char** argv) {
+	slughorn::Atlas atlas;
+
+	// KeyIterator prefix "s" produces auto-keys "s_0", "s_1", ... when fill()
+	// or stroke() is called without an explicit key.
+	slughorn::canvas::Canvas canvas(atlas, slughorn::KeyIterator("s"));
+
+	canvas.setTolerance(slughorn::TOLERANCE_BALANCED);
+
+	// ============================================================================================
+	// Pattern 1: fill(color) auto-key shape -> finalize(key) names composite.
+	//
+	// The shape gets an auto-key ("s_0"), the composite gets the named key.
+	// Most convenient for single-use geometry you never need to look up directly.
+	//
+	// CLI: `slughorn render atlas.slug tri_composite` resolves via composite
+	//      fallback to the single layer's shape.
+	// ============================================================================================
+
+	canvas.beginPath();
+	canvas.moveTo(0.5_cv, 0.9_cv);
+	canvas.lineTo(0.9_cv, 0.1_cv);
+	canvas.lineTo(0.1_cv, 0.1_cv);
+	canvas.closePath();
+	canvas.fill(RED);
+
+	// canvas.finalize(Key("tri_composite"));
+	canvas.finalize("tri_composite");
+
+	// ============================================================================================
+	// Pattern 2: fill(color, scale, key) named shape -> finalize(key).
+	//
+	// Shape and composite both get explicit names. Use when you need the shape directly addressable
+	// (e.g. CLI `render`, Python atlas.get_shape(), or sharing the geometry with another Layer
+	// later).
+	// ============================================================================================
+
+	canvas.circle(0.5_cv, 0.5_cv, 0.4_cv);
+	canvas.fill(BLUE, 1_cv, Key("circle_shape"));
+
+	canvas.finalize(Key("circle_composite"));
+
+	// ============================================================================================
+	// Pattern 3: Multi-layer composite with auto-key shapes.
+	//
+	// Each fill() generates a new auto-key shape and appends a Layer. All three accumulate before
+	// finalize(key) registers the composite. The standard pattern for building a scene with
+	// multiple colored regions.
+	// ============================================================================================
+
+	canvas.rect(0.05_cv, 0.05_cv, 0.9_cv, 0.9_cv);
+	canvas.fill(RED); // "s_2"
+
+	canvas.circle(0.5_cv, 0.5_cv, 0.35_cv);
+	canvas.fill(BLUE); // "s_3"
+
+	canvas.roundedRect(0.25_cv, 0.25_cv, 0.5_cv, 0.5_cv, 0.08_cv);
+	canvas.fill(GREEN); // "s_4"
+
+	canvas.finalize(Key("three_layer"));
+
+	// ============================================================================================
+	// Pattern 4: Multi-layer composite with named shapes.
+	//
+	// Each layer's shape is independently addressable AND part of the composite. Use when the
+	// caller needs both fine-grained shape access and the composite as a unit (e.g. one layer gets
+	// a hover highlight, the others do not).
+	// ============================================================================================
+
+	canvas.ellipse(0.5_cv, 0.5_cv, 0.45_cv, 0.28_cv);
+	canvas.fill(CYAN, 1_cv, Key("badge_bg"));
+
+	canvas.roundedRect(0.15_cv, 0.35_cv, 0.7_cv, 0.3_cv, 0.12_cv);
+	canvas.fill(GOLD, 1_cv, Key("badge_bar"));
+
+	canvas.finalize(Key("badge_composite"));
+
+	// ============================================================================================
+	// Pattern 5: defineShape(key) geometry only, no color, no Layer.
+	//
+	// Registers the shape in the Atlas but does NOT add a Layer to the in-progress composite. Use
+	// when you want to reuse the same outline with different colors or transforms, managed by the
+	// caller.
+	//
+	// finalize() is not needed here: defineShape() commits directly and the composite accumulator
+	// is still empty after this call.
+	// ============================================================================================
+
+	canvas.roundedRect(0.1_cv, 0.1_cv, 0.8_cv, 0.8_cv, 0.15_cv);
+	canvas.defineShape(Key("rrect_geom"));
+
+	// ============================================================================================
+	// Pattern 6: stroke(width, color) stroke as commit verb, auto-key.
+	//
+	// Expands the path to a constant-width outline AND commits it as a colored Layer in one call.
+	// Matches HTML Canvas / Cairo / NanoVG semantics. The path transformer (strokePath) is called
+	// internally.
+	// ============================================================================================
+
+	canvas.beginPath();
+	canvas.moveTo(0.1_cv, 0.5_cv);
+	canvas.quadTo(0.25_cv, 0.05_cv, 0.5_cv, 0.5_cv);
+	canvas.quadTo(0.75_cv, 0.95_cv, 0.9_cv, 0.5_cv);
+	canvas.stroke(0.06_cv, WHITE); // auto-key "s_5"
+
+	canvas.finalize(Key("scurve_stroke_composite"));
+
+	// ============================================================================================
+	// Pattern 7: stroke(width, color, scale, key) named stroke commit.
+	//
+	// Same as pattern 6 but the shape is registered under an explicit key. CLI `render atlas.slug
+	// zigzag_stroke` works without composite fallback. Also demonstrates miter joins from the
+	// Phase 2 stroke implementation.
+	// ============================================================================================
+
+	canvas.beginPath();
+	canvas.moveTo(0_cv, 0_cv);
+	canvas.lineTo(0.1_cv, 0.5_cv);
+	canvas.lineTo(0.2_cv, 0_cv);
+	canvas.lineTo(0.3_cv, 0.5_cv);
+	canvas.lineTo(0.4_cv, 0_cv);
+	canvas.lineTo(0.5_cv, 0.5_cv);
+	canvas.lineTo(0.6_cv, 0_cv);
+	canvas.lineTo(0.7_cv, 0.5_cv);
+	canvas.lineTo(0.8_cv, 0_cv);
+	canvas.lineTo(0.9_cv, 0.5_cv);
+	canvas.lineTo(1_cv, 0_cv);
+	canvas.stroke(0.04_cv, CYAN, 1_cv, Key("zigzag_stroke"));
+	// stroke() with an explicit key registers the shape AND queues a Layer in the
+	// composite accumulator, just like fill(). If you only want the named shape
+	// and not the composite wrapper, clear the accumulator explicitly.
+	canvas.beginComposite();
+
+	// ============================================================================================
+	// Pattern 8: strokePath(width) + defineShape(key) geometry-only stroke.
+	//
+	// The escape hatch: strokePath() transforms the path in place (centerline -> outline), then
+	// defineShape() commits the resulting outline as raw geometry with no color. Use when you need
+	// the outline curves for something the commit verbs can't express directly.
+	// ============================================================================================
+
+	canvas.beginPath();
+	canvas.moveTo(0.2_cv, 0.85_cv);
+	canvas.quadTo(0.1_cv, 0.5_cv, 0.5_cv, 0.5_cv);
+	canvas.quadTo(0.9_cv, 0.5_cv, 0.8_cv, 0.15_cv);
+	canvas.strokePath(0.08_cv);
+	canvas.defineShape(Key("scurve_outline_geom"));
+
+	// ============================================================================================
+	// Pattern 9: arcTo() rounded corners, stadium shape.
+	//
+	// moveTo() must start at a tangent point on the shape boundary, not at a bounding-box corner.
+	// closePath() then returns to that same point with a zero-length segment. For axis-aligned
+	// rounded rects prefer roundedRect() (Patterns 3/4); arcTo() shines for irregular corners.
+	// ============================================================================================
+
+	canvas.beginPath();
+	canvas.moveTo(0.3_cv, 0.3_cv);
+	canvas.arcTo(0.8_cv, 0.3_cv, 0.8_cv, 0.7_cv, 0.1_cv);
+	canvas.arcTo(0.8_cv, 0.7_cv, 0.2_cv, 0.7_cv, 0.1_cv);
+	canvas.arcTo(0.2_cv, 0.7_cv, 0.2_cv, 0.3_cv, 0.1_cv);
+	canvas.arcTo(0.2_cv, 0.3_cv, 0.8_cv, 0.3_cv, 0.1_cv);
+	canvas.closePath();
+	canvas.fill(GREEN, 1_cv, Key("stadium_arcto"));
+
+	canvas.finalize(Key("stadium_composite"));
+
+	canvas.beginPath();
+	canvas.moveTo(0_cv, 0_cv);
+	canvas.lineTo(5_cv, 5_cv);
+	canvas.lineTo(10_cv, 0_cv);
+	canvas.lineTo(15_cv, 0_cv);
+	canvas.lineTo(20_cv, 10_cv);
+	canvas.lineTo(25_cv, 10_cv);
+	canvas.lineTo(30_cv, 15_cv);
+	canvas.lineTo(35_cv, 0_cv);
+	canvas.lineTo(40_cv, 5_cv);
+	canvas.lineTo(45_cv, 0_cv);
+	canvas.lineTo(50_cv, 0_cv);
+	canvas.strokePath(2_cv);
+	canvas.defineShape(slughorn::Key("stroke_test"), 1_cv / 50_cv);
+
+	// ============================================================================================
+	// Pattern 10: Linear gradient fill.
+	//
+	// createLinearGradient() produces a GradientHandle from two authoring-space endpoints and a
+	// stop list. fillGradient() commits the path the same way fill() does - geometry goes into
+	// the atlas, a Layer is pushed onto the composite - but layer.gradientId is set to the 1-based
+	// gradient index instead of a flat color. The gradient atlas texture is rasterized during
+	// atlas.build().
+	// ============================================================================================
+
+	// Simple left-to-right red -> blue gradient over a unit square.
+	{
+		auto grad = canvas.createLinearGradient(
+			0_cv, 0_cv, 1_cv, 0_cv,
+			{
+				{0_cv, {1_cv, 0_cv, 0_cv, 1_cv}}, // red at t=0
+				{1_cv, {0_cv, 0_cv, 1_cv, 1_cv}} // blue at t=1
+			}
+		);
+
+		canvas.beginPath();
+		canvas.rect(0.1_cv, 0.1_cv, 0.8_cv, 0.8_cv);
+		canvas.fillGradient(grad, 1_cv, Key("grad_rect_shape"));
+
+		canvas.finalize(Key("grad_rect_composite"));
+	}
+
+	// Diagonal yellow -> transparent gradient over a triangle.
+	{
+		auto grad = canvas.createLinearGradient(
+			0_cv, 0_cv, 1_cv, 1_cv,
+			{
+				{0_cv, {1_cv, 0.8_cv, 0_cv, 1_cv}}, // gold at t=0
+				{1_cv, {1_cv, 0.8_cv, 0_cv, 0_cv}} // transparent gold at t=1
+			}
+		);
+
+		canvas.beginPath();
+		canvas.moveTo(0.5_cv, 0.9_cv);
+		canvas.lineTo(0.1_cv, 0.1_cv);
+		canvas.lineTo(0.9_cv, 0.1_cv);
+		canvas.closePath();
+		canvas.fillGradient(grad, 1_cv, Key("grad_tri_shape"));
+
+		canvas.finalize(Key("grad_tri_composite"));
+	}
+
+	// ============================================================================================
+	// Pattern 11: Radial gradient fill.
+	//
+	// createRadialGradient() takes a center (cx, cy), inner radius r0, and outer radius r1.
+	// r0 = 0 produces the common point-centre radial. t = 0 at the inner edge, t = 1 at the
+	// outer edge. Points beyond the outer radius clamp to the last stop color.
+	// ============================================================================================
+
+	// Point-centre radial: red at centre, blue at the rim, over a circle.
+	{
+		auto grad = canvas.createRadialGradient(
+			0.5_cv, 0.5_cv, // center
+			0_cv, // inner radius (point centre)
+			0.5_cv, // outer radius (reaches the circle edge)
+			{
+				{0_cv, {1_cv, 0_cv, 0_cv, 1_cv}}, // red at t=0 (centre)
+				{1_cv, {0_cv, 0_cv, 1_cv, 1_cv}} // blue at t=1 (rim)
+			}
+		);
+
+		canvas.circle(0.5_cv, 0.5_cv, 0.45_cv);
+		canvas.fillGradient(grad, 1_cv, Key("grad_radial_circle_shape"));
+
+		canvas.finalize(Key("grad_radial_circle_composite"));
+	}
+
+	// Annular radial: green ring (inner radius 0.2, outer 0.45) over a circle.
+	{
+		auto grad = canvas.createRadialGradient(
+			0.5_cv, 0.5_cv,
+			0.2_cv, // inner radius
+			0.45_cv, // outer radius
+			{
+				{0_cv, {0_cv, 0.8_cv, 0_cv, 1_cv}}, // bright green at inner edge
+				{1_cv, {0_cv, 0.2_cv, 0_cv, 1_cv}} // dark green at outer edge
+			}
+		);
+
+		canvas.circle(0.5_cv, 0.5_cv, 0.45_cv);
+		canvas.fillGradient(grad, 1_cv, Key("grad_radial_ring_shape"));
+
+		canvas.finalize(Key("grad_radial_ring_composite"));
+	}
+
+	// ============================================================================================
+	// Pattern 12: Sweep (conic) gradient fill.
+	//
+	// createSweepGradient() takes a center, startAngle and endAngle (radians, same convention as
+	// arc()). t=0 at startAngle, t=1 at endAngle. Using -a to +a gives a seam-free full circle
+	// because atan2's output range exactly matches, so the first and last stops meet cleanly.
+	// ============================================================================================
+
+	// Full-circle colour wheel: red -> yellow -> green -> cyan -> blue -> magenta -> red.
+	{
+		const auto PI = cv(M_PI);
+
+		auto grad = canvas.createSweepGradient(
+			0.5_cv, 0.5_cv, // center
+			-PI, PI, // full circle, seam at -a/+a (left edge)
+			{
+				{0.000_cv, {1_cv, 0_cv, 0_cv, 1_cv}}, // red
+				{0.167_cv, {1_cv, 1_cv, 0_cv, 1_cv}}, // yellow
+				{0.333_cv, {0_cv, 1_cv, 0_cv, 1_cv}}, // green
+				{0.500_cv, {0_cv, 1_cv, 1_cv, 1_cv}}, // cyan
+				{0.667_cv, {0_cv, 0_cv, 1_cv, 1_cv}}, // blue
+				{0.833_cv, {1_cv, 0_cv, 1_cv, 1_cv}}, // magenta
+				{1.000_cv, {1_cv, 0_cv, 0_cv, 1_cv}} // red (closes seam-free)
+			}
+		);
+
+		canvas.circle(0.5_cv, 0.5_cv, 0.45_cv);
+		canvas.fillGradient(grad, 1_cv, Key("grad_sweep_wheel_shape"));
+
+		canvas.finalize(Key("grad_sweep_wheel_composite"));
+	}
+
+	// 270-degree progress gauge: green (start) -> yellow (mid) -> red (end).
+	// Sweep from -135 degrees to +135 degrees (bottom-left to bottom-right, leaving a gap at the
+	// bottom).
+	{
+		const auto PI = cv(M_PI);
+
+		auto grad = canvas.createSweepGradient(
+			0.5_cv, 0.5_cv,
+			-PI * 0.75_cv, PI * 0.75_cv,
+			{
+				{0_cv, {0_cv, 1_cv, 0_cv, 1_cv}}, // green
+				{0.5_cv, {1_cv, 1_cv, 0_cv, 1_cv}}, // yellow
+				{1_cv, {1_cv, 0_cv, 0_cv, 1_cv}} // red
+			}
+		);
+
+		canvas.circle(0.5_cv, 0.5_cv, 0.45_cv);
+		canvas.fillGradient(grad, 1_cv, Key("grad_sweep_gauge_shape"));
+
+		canvas.finalize(Key("grad_sweep_gauge_composite"));
+	}
+
+	// ============================================================================================
+	// Pattern 13: Transform stack - clock face with baked tick marks.
+	//
+	// Demonstrates save()/restore(), translate(), and rotate(). The outer circle arc and all
+	// 12 tick stroke outlines are accumulated as sub-paths and committed in a SINGLE fill()
+	// call, producing one atlas Shape. This works because closePath() and strokePath() both
+	// append to _pendingCurves without committing; fill() commits everything at once.
+	//
+	// The non-zero winding rule gives each sub-path its own filled region, so the ticks render
+	// as solid rectangles inset from the clock rim, all baked into a single atlas entry.
+	// ============================================================================================
+
+	{
+		const auto PI = cv(M_PI);
+
+		const slug_t CX = 0.5_cv, CY = 0.5_cv;
+		const slug_t FACE_R = 0.45_cv;
+		const slug_t TICK_OUTER = 0.43_cv;
+		const slug_t TICK_INNER = 0.36_cv;
+		const slug_t TICK_WIDTH = 0.025_cv;
+
+		const Color FACE_COLOR = {0.95_cv, 0.92_cv, 0.82_cv, 1_cv}; // parchment
+		const Color TICK_COLOR = {0.15_cv, 0.15_cv, 0.15_cv, 1_cv}; // near-black
+
+		using Origin = slughorn::Atlas::ShapeInfo::Origin;
+
+		// -- Clock face: filled circle (one Shape, one Layer) --------------------------------
+
+		canvas.circle(CX, CY, FACE_R);
+		canvas.fill(FACE_COLOR, 1_cv, Key("clock_face_shape"), Origin(Origin::Type::Centered));
+
+		canvas.finalize(Key("clock_face_composite"));
+
+		// -- Tick marks: 12 stroked lines, all baked into ONE Shape -------------------------
+		//
+		// save()/restore() isolates each rotation so subsequent save()s start from the
+		// base CTM. The ticks are drawn along the +Y axis in local space; translate() moves
+		// the origin to the clock centre first.
+
+		canvas.beginPath();
+
+		for(int i = 0; i < 12; ++i) {
+			canvas.save();
+			canvas.translate(CX, CY);
+			canvas.rotate(cv(i * 2.0 * M_PI / 12.0));
+
+			canvas.moveTo(0_cv, TICK_INNER);
+			canvas.lineTo(0_cv, TICK_OUTER);
+			canvas.strokePath(TICK_WIDTH);
+
+			canvas.restore();
+		}
+
+		canvas.fill(TICK_COLOR, 1_cv, Key("clock_ticks_shape"), Origin(Origin::Type::Centered));
+
+		canvas.finalize(Key("clock_ticks_composite"));
+	}
+
+	// ============================================================================================
+	// Pattern 14: Origin(px, py) - explicit pivot for GPU-side rotation.
+	//
+	// A clock hand (a stroke from the pivot point to the tip) authored with Origin(cx, cy)
+	// so that Layer::transform.dx/dy == (cx, cy) in em-space. The GPU consumer can then rotate
+	// the shape around that exact point without any translate-rotate-translate gymnastics.
+	//
+	// Compare the three modes on an asymmetric shape like this hand:
+	//
+	// Origin{} - transform.dx/dy = bbox corner (wrong pivot)
+	// Origin(Centered) - transform.dx/dy = bbox center (wrong pivot, hand is asymmetric)
+	// Origin(cx, cy) - transform.dx/dy = hand base (correct pivot = clock centre)
+	// ============================================================================================
+
+	{
+		const slug_t CX = 0.5_cv, CY = 0.25_cv; // pivot = clock centre / hand base
+		const slug_t HAND_LENGTH = 0.45_cv;
+		const slug_t HAND_WIDTH = 0.03_cv;
+
+		const Color HAND_COLOR = {0.12_cv, 0.12_cv, 0.18_cv, 1_cv};
+
+		canvas.moveTo(CX, CY);
+		canvas.lineTo(CX, CY + HAND_LENGTH);
+
+		canvas.stroke(
+			HAND_WIDTH,
+			HAND_COLOR,
+			1_cv,
+			slughorn::Atlas::ShapeInfo::Origin(CX, CY)
+		);
+
+		// Verify: the layer's transform.dx/dy should equal (CX, CY) - the caller-supplied pivot.
+		const auto hand = canvas.finalize();
+
+		if(!hand.layers.empty()) {
+			const auto& t = hand.layers.front().transform;
+			const bool pivotOk = std::abs(t.x - CX) < 1e-5_cv && std::abs(t.y - CY) < 1e-5_cv;
+
+			std::cerr
+				<< "Pattern 14: hand pivot = (" << t.x << ", " << t.y << ")"
+				<< " expected (" << CX << ", " << CY << ")"
+				<< (pivotOk ? " OK" : " MISMATCH") << "\n"
+			;
+		}
+
+		atlas.addCompositeShape(Key("clock_hand_composite"), hand);
+	}
+
+	// ============================================================================================
+	// Pattern 15: Same geometry, two different origins - for SVG debug visualization.
+	//
+	// The rectangle spans [0.1, 0.9] x [0.15, 0.85] in authoring space.
+	//
+	// pivot_centered_shape: Origin::Centered -> dot at geometric center (0.5, 0.5)
+	// pivot_custom_shape: Origin(0.2, 0.72) -> dot clearly off-center; obviously intentional
+	//
+	// CLI: `slughorn svg atlas.slug pivot_centered_shape`
+	//      `slughorn svg atlas.slug pivot_custom_shape`
+	//  The yellow dot should jump between the two positions.
+	// ============================================================================================
+
+	{
+		using Origin = slughorn::Atlas::ShapeInfo::Origin;
+
+		const Color PURPLE = {0.6_cv, 0_cv, 0.8_cv, 1_cv};
+
+		canvas.rect(0.1_cv, 0.15_cv, 0.8_cv, 0.7_cv);
+		canvas.fill(PURPLE, 1_cv, Key("pivot_centered_shape"), Origin(Origin::Type::Centered));
+
+		canvas.finalize(Key("pivot_centered_composite"));
+
+		canvas.rect(0.1_cv, 0.15_cv, 0.8_cv, 0.7_cv);
+		canvas.fill(PURPLE, 1_cv, Key("pivot_custom_shape"), Origin(0.2_cv, 0.72_cv));
+
+		canvas.finalize(Key("pivot_custom_composite"));
+	}
+
+	// ============================================================================================
+
+	// ============================================================================================
+	// Pattern 16: Standalone Path - build, sample, and commit independently of Canvas.
+	//
+	// NOTE: Patterns 17 and 18 below exercise Canvas::text(). No font is loaded in this
+	// test, so atlas.getShape() returns nullptr for every codepoint and the fallback
+	// advance (0.6 em) is used for spacing. The tests verify layer accumulation and that
+	// both the single-pass (Left) and two-pass (Center) alignment paths execute cleanly.
+	//
+	// The path is constructed without any canvas involvement. sample() works directly on
+	// the standalone Path. canvas.stroke(p, ...) commits p's geometry without consuming it;
+	// p could be reused, transformed, or sampled again after the call.
+	// ============================================================================================
+	{
+		slughorn::canvas::Path p;
+
+		p.moveTo(0_cv, 0_cv);
+		p.lineTo(0.3_cv, 0_cv);
+		p.quadTo(0.5_cv, 1_cv, 0.7_cv, 0_cv);
+		p.lineTo(1_cv, 0_cv);
+
+		// for(slug_t s = 0_cv; s <= 1_cv; s += 0.1_cv) std::cout
+		for(size_t i = 0; i < 11; i++) {
+			const auto s = cv(i / 10_cv);
+
+			std::cout << "sample @ " << s << " = " << p.sample(s) << std::endl;
+		}
+
+		// Commit via explicit-path overload - p is unchanged after this call.
+		canvas.stroke(p, 0.06_cv, WHITE);
+		canvas.finalize(Key("sample_path"));
+
+		// Verify: canvas.path() still returns the implicit path (unaffected by p).
+		std::cerr
+			<< "Pattern 16: internal path hasPendingPath="
+			<< canvas.hasPendingPath() << " (expected 0)\n"
+		;
+	}
+
+	// ============================================================================================
+	// Pattern 17: Canvas::text() - left-aligned baseline placement (single-pass).
+	//
+	// FontMetrics is a plain slug_t struct in slughorn.hpp; no FreeType dependency here.
+	// canvas.text() pushes one Layer per glyph into _composite, same as fill()/stroke().
+	// With no font loaded, atlas.getShape() returns nullptr and the 0.6-em fallback
+	// advance is used; the layer count and key values are still correct.
+	// ============================================================================================
+	{
+		slughorn::FontMetrics m;
+
+		// Approximate Latin metrics for a typical serif face.
+		m.unitsPerEM = 1000_cv;
+		m.capHeightRatio = 0.72_cv;
+		m.xHeightRatio = 0.53_cv;
+		m.ascenderRatio = 0.80_cv;
+		m.descenderRatio = 0.20_cv;
+		m.lineGapRatio = 0.00_cv;
+
+		canvas.text("AXO", 70_cv, 20_cv, 55_cv, WHITE, m);
+		canvas.finalize(Key("text_left"));
+
+		std::cerr
+			<< "Pattern 17: text_left layers="
+			<< canvas.layerCount() << " (expected 0 after finalize)\n"
+		;
+	}
+
+	// ============================================================================================
+	// Pattern 18: Canvas::text() - centered + CapCenter anchor (two-pass alignment).
+	//
+	// TextAlignX::Center triggers a measure pass before placing glyphs.
+	// TextAnchorY::CapCenter shifts the baseline so that capital-letter tops align to y.
+	// ============================================================================================
+	{
+		slughorn::FontMetrics m;
+
+		m.unitsPerEM = 1000_cv;
+		m.capHeightRatio = 0.72_cv;
+		m.xHeightRatio = 0.53_cv;
+		m.ascenderRatio = 0.80_cv;
+		m.descenderRatio = 0.20_cv;
+		m.lineGapRatio = 0.00_cv;
+
+		const size_t before = canvas.layerCount();
+
+		canvas.text(
+			"AXO", 70_cv,
+			180_cv, 260_cv,
+			WHITE, m,
+			slughorn::canvas::TextAnchorY::CapCenter,
+			slughorn::canvas::TextAlignX::Center
+		);
+
+		std::cerr
+			<< "Pattern 18: text_centered layers added="
+			<< (canvas.layerCount() - before) << " (expected 3)\n"
+		;
+
+		canvas.finalize(Key("text_centered"));
+	}
+
+	// ============================================================================================
+	// Pattern 19: Multi-subpath shape via raw path commands.
+	//
+	// Three disconnected rects built with explicit moveTo/lineTo/closePath after a single
+	// beginPath(). All three sub-paths land in one shape. The bounding box of the resulting
+	// shape should span the union of all three rects (x: 0.1→0.9, y: 0.25→0.75).
+	//
+	// This is the general-purpose proof that disconnected sub-paths work correctly.
+	// ============================================================================================
+	{
+		auto addRect = [&](slug_t x, slug_t y, slug_t w, slug_t h) {
+			canvas.moveTo(x,     y);
+			canvas.lineTo(x + w, y);
+			canvas.lineTo(x + w, y + h);
+			canvas.lineTo(x,     y + h);
+			canvas.closePath();
+		};
+
+		canvas.beginPath();
+		addRect(0.1_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		addRect(0.4_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		addRect(0.7_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		canvas.fill(WHITE, 1_cv, Key("three_rect_raw"));
+
+		const auto comp19 = canvas.finalize();
+
+		atlas.addCompositeShape(Key("three_rect_raw_comp"), comp19);
+
+		std::cerr
+			<< "Pattern 19: three_rect_raw layers="
+			<< comp19.layers.size() << " (expected 1)\n"
+		;
+	}
+
+	// ============================================================================================
+	// Pattern 20: Multi-subpath shape via rect() helpers — BUG-1 regression test.
+	//
+	// Three canvas.rect() calls after a single beginPath() must accumulate, NOT wipe each
+	// other. rect() must not call clear() internally (matches HTML Canvas spec).
+	//
+	// The resulting shape must be identical to Pattern 19 (same union bounding box).
+	// ============================================================================================
+	{
+		canvas.beginPath();
+		canvas.rect(0.1_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		canvas.rect(0.4_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		canvas.rect(0.7_cv, 0.25_cv, 0.2_cv, 0.5_cv);
+		canvas.fill(WHITE, 1_cv, Key("three_rect_helpers"));
+
+		const auto comp20 = canvas.finalize();
+
+		atlas.addCompositeShape(Key("three_rect_helpers_comp"), comp20);
+
+		std::cerr
+			<< "Pattern 20: three_rect_helpers layers="
+			<< comp20.layers.size() << " (expected 1)\n"
+		;
+	}
+
+	// ============================================================================================
+	// Pattern 21: addPath(path, transform) — BUG-2 regression test.
+	//
+	// A single rect Path stamped three times via addPath() with translate transforms.
+	// Must produce the same union bounding box as Patterns 19/20 (width ~0.8, height ~0.5).
+	// ============================================================================================
+	{
+		slughorn::canvas::Path rect;
+		rect.moveTo(0_cv,    0_cv);
+		rect.lineTo(0.2_cv,  0_cv);
+		rect.lineTo(0.2_cv,  0.5_cv);
+		rect.lineTo(0_cv,    0.5_cv);
+		rect.closePath();
+
+		canvas.beginPath();
+		canvas.addPath(rect, slughorn::Matrix::translate(0.1_cv, 0.25_cv));
+		canvas.addPath(rect, slughorn::Matrix::translate(0.4_cv, 0.25_cv));
+		canvas.addPath(rect, slughorn::Matrix::translate(0.7_cv, 0.25_cv));
+		canvas.fill(WHITE, 1_cv, Key("add_path_xform"));
+
+		const auto comp21 = canvas.finalize();
+
+		atlas.addCompositeShape(Key("add_path_xform_comp"), comp21);
+
+		std::cerr
+			<< "Pattern 21: add_path_xform layers="
+			<< comp21.layers.size() << " (expected 1)\n"
+		;
+	}
+
+	// ============================================================================================
+	// Pattern 22: Commit verbs return fully-populated Layer — transform audit.
+	//
+	// Geometry is authored clearly off the origin ([0.2,0.8] x [0.3,0.7]) so that a zeroed
+	// transform is visually distinct from the correct bbox-corner/pivot value.
+	//
+	// This test exists to expose the "old brace-init bug":
+	//
+	//   auto layer = canvas.fill(...);
+	//   drawable.addLayer({layer.key, color});  // NEW Layer: transform = {} — wrong position!
+	//
+	// The old Key-only return made this the only option. With Layer returned directly,
+	// drawable.addLayer(layer) carries the correct transform from _commitFill/_commitGradient.
+	//
+	// For rotation: the vertex shader uses layer.transform.x/y as the pivot. If that is {}
+	// instead of the authored center/pivot, the shape orbits the origin instead of spinning
+	// in place — exactly the "wobble" seen with Centered/Pivot origins.
+	// ============================================================================================
+	{
+		using Origin = slughorn::Atlas::ShapeInfo::Origin;
+
+		static constexpr slug_t TOL = 1e-5_cv;
+
+		auto check = [&](const char* label, slug_t got, slug_t expected) {
+			const bool ok = std::abs(got - expected) < TOL;
+
+			std::cerr
+				<< "Pattern 22 " << label << ": "
+				<< got << " (expected " << expected << ") "
+				<< (ok ? "OK" : "FAIL") << "\n"
+			;
+		};
+
+		// Geometry: rect spanning [0.2,0.8] x [0.3,0.7] — bbox corner (0.2,0.3), center (0.5,0.5).
+
+		auto makeRect = [&]() {
+			canvas.beginPath();
+			canvas.rect(0.2_cv, 0.3_cv, 0.6_cv, 0.4_cv);
+		};
+
+		// ---- fill / Default origin: transform = bbox corner {0.2, 0.3} ----
+		{
+			makeRect();
+
+			const auto layer = canvas.fill(WHITE, 1_cv, Key("p22_fill_default"));
+
+			check("fill/Default  tx", layer.transform.x, 0.2_cv);
+			check("fill/Default  ty", layer.transform.y, 0.3_cv);
+
+			// Old brace-init pattern: transform is silently zero.
+			const slughorn::Layer oldStyle{layer.key, WHITE};
+
+			check("fill/OldStyle  tx", oldStyle.transform.x, 0_cv);
+			check("fill/OldStyle  ty", oldStyle.transform.y, 0_cv);
+
+			canvas.finalize(Key("p22_fill_default_comp"));
+		}
+
+		// ---- fill / Centered origin: transform = geometric center {0.5, 0.5} ----
+		{
+			makeRect();
+
+			const auto layer = canvas.fill(WHITE, 1_cv, Key("p22_fill_centered"), Origin(Origin::Type::Centered));
+
+			check("fill/Centered  tx", layer.transform.x, 0.5_cv);
+			check("fill/Centered  ty", layer.transform.y, 0.5_cv);
+
+			canvas.finalize(Key("p22_fill_centered_comp"));
+		}
+
+		// ---- fill / Pivot at (0.35, 0.6): transform = {0.35, 0.6} ----
+		{
+			makeRect();
+
+			const auto layer = canvas.fill(WHITE, 1_cv, Key("p22_fill_pivot"), Origin(0.35_cv, 0.6_cv));
+
+			check("fill/Pivot     tx", layer.transform.x, 0.35_cv);
+			check("fill/Pivot     ty", layer.transform.y, 0.6_cv);
+
+			canvas.finalize(Key("p22_fill_pivot_comp"));
+		}
+
+		// ---- stroke / Default origin: transform = bbox corner of the expanded outline ----
+		// The stroke outline expands outward by half-width (0.05) on each side, so the
+		// bbox corner moves to roughly {0.15, 0.25}. We only verify it is NOT zero.
+		{
+			makeRect();
+
+			const auto layer = canvas.stroke(0.1_cv, WHITE, 1_cv, Key("p22_stroke_default"));
+
+			const bool nonzeroTx = std::abs(layer.transform.x) > TOL || std::abs(layer.transform.y) > TOL;
+
+			std::cerr
+				<< "Pattern 22 stroke/Default  transform=("
+				<< layer.transform.x << "," << layer.transform.y
+				<< ") non-zero=" << nonzeroTx << " (expected 1)\n"
+			;
+
+			canvas.finalize(Key("p22_stroke_default_comp"));
+		}
+
+		// ---- fillGradient / Centered: gradientId > 0, transform = center ----
+		{
+			makeRect();
+
+			const auto grad = canvas.createLinearGradient(0.2_cv, 0.3_cv, 0.8_cv, 0.7_cv, {
+				{0_cv,  RED},
+				{1_cv,  BLUE},
+			});
+
+			const auto layer = canvas.fillGradient(grad, 1_cv, Key("p22_gradient_centered"));
+
+			check("gradient/Centered tx", layer.transform.x, 0.2_cv);
+			check("gradient/Centered ty", layer.transform.y, 0.3_cv);
+
+			const bool hasGradient = layer.gradientId > 0;
+
+			std::cerr
+				<< "Pattern 22 gradient/Centered gradientId="
+				<< layer.gradientId << " non-zero=" << hasGradient << " (expected 1)\n"
+			;
+
+			canvas.finalize(Key("p22_gradient_centered_comp"));
+		}
+	}
+
+	// ============================================================================================
+	// Pattern 23: Method chaining — Path and Canvas builder methods return *this.
+	//
+	// Every builder verb returns a reference to *this so calls can be chained. Commit
+	// verbs (fill, stroke, finalize) keep their original return types (Layer /
+	// CompositeShape) and act as natural chain terminators.
+	//
+	// Rules:
+	//   - Always start a chain from a named variable, not a temporary. auto deduces
+	//     Path& which would dangle if the temporary was constructed inline.
+	//   - Commit verbs (fill, stroke, etc.) return Layer — they terminate a Canvas chain.
+	//   - finalize() returns CompositeShape — it terminates a composite chain.
+	// ============================================================================================
+	{
+		// -- Path: chain on an existing named object --
+		slughorn::canvas::Path p;
+
+		p.moveTo(0.5_cv, 0.9_cv)
+		 .lineTo(0.9_cv, 0.1_cv)
+		 .lineTo(0.1_cv, 0.1_cv)
+		 .closePath();
+
+		// Same triangle geometry as Pattern 1, committed via explicit-path overload.
+		canvas.fill(p, RED, 1_cv, Key("chain_p_triangle"));
+		canvas.finalize(Key("chain_p_composite"));
+
+		// -- Canvas: geometry chain ending in stroke() --
+		const auto chainStroke = canvas.beginPath()
+			.moveTo(0.1_cv, 0.5_cv)
+			.quadTo(0.25_cv, 0.05_cv, 0.5_cv, 0.5_cv)
+			.quadTo(0.75_cv, 0.95_cv, 0.9_cv, 0.5_cv)
+			.stroke(0.06_cv, WHITE);
+
+		canvas.finalize(Key("chain_scurve_composite"));
+
+		// -- Canvas: shape helper chain ending in fill() --
+		const auto chainFill = canvas.circle(0.5_cv, 0.5_cv, 0.4_cv)
+			.fill(BLUE, 1_cv, Key("chain_circle_shape"));
+
+		canvas.finalize(Key("chain_circle_composite"));
+
+		// -- Canvas: transform state chain, then separate geometry + commit --
+		const auto PI = cv(M_PI);
+
+		canvas.save()
+			.translate(0.5_cv, 0.5_cv)
+			.rotate(PI / 4_cv);
+
+		const auto chainRot = canvas.rect(-0.3_cv, -0.3_cv, 0.6_cv, 0.6_cv)
+			.fill(GOLD, 1_cv, Key("chain_rot_rect"));
+
+		canvas.restore();
+		canvas.finalize(Key("chain_rot_composite"));
+
+		// -- Canvas: state setter chain --
+		canvas.setAutoMetrics(false).clearSplits();
+
+		canvas.rect(0_cv, 0_cv, 1_cv, 1_cv);
+		canvas.fill(CYAN, 1_cv, Key("chain_unit_sq"));
+		canvas.finalize(Key("chain_unit_sq_composite"));
+
+		canvas.setAutoMetrics(true);
+
+		std::cerr
+			<< "Pattern 23: chain_scurve key=" << chainStroke.key
+			<< " chain_circle key=" << chainFill.key
+			<< " chain_rot key=" << chainRot.key << "\n"
+		;
+	}
+
+	// ============================================================================================
+
+	atlas.build();
+
+	std::cerr << "PackingStats: " << atlas.getPackingStats() << std::endl;
+
+	if(argc > 1) {
+		std::ofstream f(argv[1]);
+
+		slughorn::serial::writeJSON(atlas, f);
+	}
+
+	else slughorn::serial::writeJSON(atlas, std::cout);
+
+	return 0;
+}
