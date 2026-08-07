@@ -44,6 +44,7 @@ set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(cmake/picoquic.cmake)
+include(cmake/qcbor.cmake)
 
 file(GLOB_RECURSE HANDLER_SOURCES "src/handlers/*.c")
 file(GLOB SOURCES "src/*.c")
@@ -58,6 +59,6 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE H2O_USE_LIBUV=0)
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS} ${WARNING_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored m)
+    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored qcbor_vendored m)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
