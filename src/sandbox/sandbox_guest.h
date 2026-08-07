@@ -14,19 +14,24 @@ extern "C" {
  * touching C++; the implementation (sandbox_guest.cpp) links
  * thirdparty/libriscv and src/sandbox/zf_guestfs.
  *
- * Isolation contract (RFD 0092 use plane + RFD 0094's constraints):
- *   - No host filesystem: setup_linux_syscalls(filesystem=false), and
- *     every file syscall re-routes into zf_guestfs (FDB in disguise).
- *   - No sockets, ever: setup_linux_syscalls(sockets=false). Guests
- *     never reach the h2o event loop or any host networking; some of
- *     their "offline" file calls are the networked calls, hidden.
- *   - Hard limits: guest memory (memory_max), instruction budget per
- *     run, and zf_guestfs's own storage ceilings.
+ * Isolation contract (rfd/0092's use plane, rfd/0094's constraints):
+ *   - setup_minimal_syscalls() only: close, lseek, write, fstat, exit,
+ *     brk, ebreak. No filesystem and no sockets exist to deny, because
+ *     neither was ever installed.
+ *   - Every host operation beyond that is an explicit ecall from
+ *     zone_abi.h. Storage looks local to the guest and is really FDB.
+ *   - Hard limits: guest memory (memory_max), an instruction budget,
+ *     and zf_guest_kv's own storage ceilings.
+ *
+ * This loader takes SCRIPT-class guests. Engine-class guests (a whole
+ * Godot build) run as ordinary processes under bubblewrap instead --
+ * emulating enough Linux for one in-process is unbounded work. See
+ * rfd/0095.
  */
 
 typedef struct {
     const char *elf_path;      /* guest ELF on the host disk (CDN-fetched) */
-    const char *cluster_file;  /* FDB cluster file, for zf_guestfs */
+    const char *cluster_file;  /* FDB cluster file, for zf_guest_kv */
     uint32_t    z_id;
     uint64_t    memory_max;    /* guest memory ceiling, bytes */
     uint64_t    max_instructions; /* per sandbox_guest_run() call */

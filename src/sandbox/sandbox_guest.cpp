@@ -1,23 +1,22 @@
 /*
- * Guest ELF loader implementation. See sandbox_guest.h for the
- * isolation contract, zf_guestfs.h for the storage contract.
+ * Guest ELF loader. See sandbox_guest.h for the isolation contract,
+ * zone_abi.h for the guest ABI, zf_guest_kv.h for the storage rules.
  *
- * The syscall layer here mirrors zone-guest-godot's verified rvlinux
- * boot recipe (its libriscv-fixes.patch, fixes 4-11), with one
- * deliberate divergence: instead of proxying file syscalls to the
- * host filesystem the way rvlinux does, every file syscall lands in
- * zf_guestfs -- FDB in disguise, the guest believes it is offline.
- *
- * Handler-table note: libriscv's install_syscall_handler is STATIC per
- * Machine template width, so the VFS context must come from
- * machine.get_userdata(), never from a global. One process runs one
- * zone (README's 1 process : 1 zone), and this loader runs one guest
- * thread; multiple guests per zone (RFD 0094's composition) will need
- * per-machine userdata anyway, which this already does.
+ * This host does NOT emulate Linux. libriscv's minimal syscall set
+ * gives a guest its heap (brk), its console (write), and exit; every
+ * other host operation is an explicit ecall from zone_abi.h. An
+ * earlier revision of this file went the other way, installing
+ * openat/read/lseek/fstat/getcwd/chdir/mkdirat/unlinkat plus a
+ * synthetic /dev -- 17 handlers -- chasing a whole game engine's
+ * expectations. That list has no end short of a Linux kernel, so the
+ * design changed instead of the list growing: engine-class guests now
+ * run under bubblewrap as ordinary processes (see rfd/0095), and
+ * in-process guests are scripts that speak this ABI.
  */
 
 #include "sandbox_guest.h"
-#include "zf_guestfs.h"
+#include "zf_guest_kv.h"
+#include "zone_abi.h"
 
 extern "C" {
 #include "gen/rebac.h"
@@ -36,181 +35,181 @@ extern "C" {
 static constexpr int W = 8; /* riscv64 */
 using SandboxMachine = riscv::Machine<W>;
 
-/* Per-machine context, reached via machine.get_userdata(). */
+/* Per-machine context, reached via machine.get_userdata(). Never a
+ * global: libriscv's syscall handler table is static per machine
+ * width, and rfd/0094's composition puts several guests in one zone. */
 struct sandbox_ctx {
-    zf_guestfs_t *fs;
-    uint32_t      z_id;
+    zf_guest_kv_t *kv;
+    uint32_t       z_id;
 };
-
-/* Guest fd namespace: 0/1/2 are console, VFS handles start here. */
-static constexpr int GFS_FD_BASE = 4;
 
 static sandbox_ctx *ctx_of(SandboxMachine &m)
 {
     return m.template get_userdata<sandbox_ctx>();
 }
 
-/* --- file syscall layer over zf_guestfs -------------------------------- */
-
-static void sys_openat(SandboxMachine &m)
+/* Guest string argument -> std::string, bounds-checked by libriscv. */
+static std::string guest_str(SandboxMachine &m, uint64_t addr, uint64_t len)
 {
-    auto *ctx = ctx_of(m);
-    /* dirfd is ignored on purpose: the VFS namespace is closed and
-     * rooted, every guest path normalizes into it (zf_guestfs.c's
-     * gfs_normalize_path), so directory-relative resolution collapses
-     * to root-relative. AT_FDCWD arrives here too and needs nothing. */
-    const auto g_path = m.sysarg(1);
-    const int flags = m.template sysarg<int>(2);
-    std::string path = m.memory.memstring(g_path);
-
-    const bool creat = (flags & 0100) != 0; /* O_CREAT, riscv64 ABI */
-    int h = zf_guestfs_open(ctx->fs, path.c_str(), creat);
-    m.set_result(h < 0 ? h : h + GFS_FD_BASE);
-}
-
-static void sys_close(SandboxMachine &m)
-{
-    auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    if (vfd < GFS_FD_BASE) { m.set_result(0); return; } /* console fds */
-    m.set_result(zf_guestfs_close(ctx->fs, vfd - GFS_FD_BASE));
-}
-
-static void sys_read(SandboxMachine &m)
-{
-    auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    const auto g_buf = m.sysarg(1);
-    const uint64_t len = m.sysarg(2);
-    if (vfd < GFS_FD_BASE) { m.set_result(0); return; } /* console: EOF */
-
+    if (len == 0) return std::string();
     std::vector<uint8_t> tmp(len);
-    int64_t n = zf_guestfs_read(ctx->fs, vfd - GFS_FD_BASE, tmp.data(), len);
-    if (n > 0) m.copy_to_guest(g_buf, tmp.data(), (size_t)n);
+    m.copy_from_guest(tmp.data(), addr, len);
+    return std::string(reinterpret_cast<const char *>(tmp.data()), len);
+}
+
+/* --- the ABI ---------------------------------------------------------- */
+
+static void ecall_kv_get(SandboxMachine &m)
+{
+    auto *ctx = ctx_of(m);
+    const auto g_key = m.sysarg(0);
+    const uint64_t key_len = m.sysarg(1);
+    const auto g_buf = m.sysarg(2);
+    const uint64_t buf_len = m.sysarg(3);
+
+    std::string key = guest_str(m, g_key, key_len);
+    std::vector<uint8_t> tmp(buf_len ? buf_len : 1);
+    int64_t n = zf_guest_kv_get(ctx->kv, key.c_str(), tmp.data(), buf_len);
+    if (n > 0 && buf_len > 0) {
+        m.copy_to_guest(g_buf, tmp.data(), (size_t)(n < (int64_t)buf_len ? n : buf_len));
+    }
+    m.set_result(n); /* full length, even when the guest's buffer was short */
+}
+
+static void ecall_kv_set(SandboxMachine &m)
+{
+    auto *ctx = ctx_of(m);
+    const auto g_key = m.sysarg(0);
+    const uint64_t key_len = m.sysarg(1);
+    const auto g_val = m.sysarg(2);
+    const uint64_t val_len = m.sysarg(3);
+
+    std::string key = guest_str(m, g_key, key_len);
+    std::vector<uint8_t> val(val_len ? val_len : 1);
+    if (val_len) m.copy_from_guest(val.data(), g_val, val_len);
+    m.set_result(zf_guest_kv_set(ctx->kv, key.c_str(), val.data(), val_len));
+}
+
+static void ecall_kv_del(SandboxMachine &m)
+{
+    auto *ctx = ctx_of(m);
+    std::string key = guest_str(m, m.sysarg(0), m.sysarg(1));
+    m.set_result(zf_guest_kv_del(ctx->kv, key.c_str()));
+}
+
+static void ecall_kv_list(SandboxMachine &m)
+{
+    auto *ctx = ctx_of(m);
+    const auto g_prefix = m.sysarg(0);
+    const uint64_t prefix_len = m.sysarg(1);
+    const auto g_buf = m.sysarg(2);
+    const uint64_t buf_len = m.sysarg(3);
+
+    std::string prefix = guest_str(m, g_prefix, prefix_len);
+    std::vector<char> tmp(buf_len ? buf_len : 1);
+    int64_t n = zf_guest_kv_list(ctx->kv, prefix.c_str(), tmp.data(), buf_len);
+    if (n > 0 && buf_len > 0) m.copy_to_guest(g_buf, tmp.data(), buf_len);
     m.set_result(n);
 }
 
-static void sys_write(SandboxMachine &m)
+static void ecall_print(SandboxMachine &m)
 {
     auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    const auto g_buf = m.sysarg(1);
-    const uint64_t len = m.sysarg(2);
-
+    const uint64_t len = m.sysarg(1);
     if (len == 0) { m.set_result(0); return; }
-    std::vector<uint8_t> tmp(len);
-    m.copy_from_guest(tmp.data(), g_buf, len);
+    std::string s = guest_str(m, m.sysarg(0), len);
+    fprintf(stderr, "zone %u guest: %.*s\n", ctx->z_id, (int)s.size(), s.data());
+    m.set_result(0);
+}
 
-    if (vfd >= GFS_FD_BASE) {
-        m.set_result(zf_guestfs_write(ctx->fs, vfd - GFS_FD_BASE, tmp.data(), len));
+/*
+ * Host entropy. Routed through one call so a journal replay can seed
+ * it deterministically (see zone_abi.h's ZONE_ENTROPY note). Fails
+ * closed: a guest never receives predictable bytes it believes are
+ * random.
+ */
+static void ecall_entropy(SandboxMachine &m)
+{
+    const auto g_buf = m.sysarg(0);
+    const uint64_t len = m.sysarg(1);
+    if (len == 0) { m.set_result(0); return; }
+
+    static FILE *urandom = nullptr;
+    if (!urandom) urandom = fopen("/dev/urandom", "rb");
+
+    std::vector<uint8_t> tmp(len);
+    if (!urandom || fread(tmp.data(), 1, len, urandom) != len) {
+        fprintf(stderr, "sandbox: host entropy unavailable, guest request denied\n");
+        m.set_result(-EIO);
         return;
     }
-    /* Console: guest stdout/stderr go to the host log, zone-tagged.
-     * This is observability output, not a capability. */
-    fprintf(stderr, "zone %u guest: %.*s", ctx->z_id, (int)len, (const char *)tmp.data());
+    m.copy_to_guest(g_buf, tmp.data(), len);
     m.set_result((int64_t)len);
 }
 
-static void sys_writev(SandboxMachine &m)
+/*
+ * Object store, declared in the ABI and not yet wired.
+ *
+ * Deliberately NOT implemented here. fabric-godot-core's
+ * modules/multiplayer_fabric_asset already implements this exact
+ * format in C++ -- .caibx parsing, chunk fetch, SHA-512/256
+ * verification, zstd, AES-128-GCM, local cache, and the Uro ACL
+ * check. Writing a second casync client in this file would repeat
+ * the mistake this whole rewrite corrected: a bespoke reimplementation
+ * of something that exists.
+ *
+ * ZONE_OBJ_PUT additionally is not a guest capability. A guest
+ * reaches it only through a ReBAC delegation edge to a principal that
+ * holds admin capability, and the publish is attributed to that
+ * principal (rfd/0095).
+ *
+ * Both answer -ENOSYS until that module is extracted from the Godot
+ * build and linked here. Stated explicitly rather than left to the
+ * catch-all, so a guest developer reading the log sees "not wired
+ * yet" instead of "wrong syscall number".
+ */
+static void ecall_obj_unimplemented(SandboxMachine &m)
 {
-    /* Decompose into sys_write per iov: simplest correct form, and
-     * writev's atomicity guarantee is meaningless over a private
-     * in-memory buffer. */
-    auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    const auto g_iov = m.sysarg(1);
-    const int iovcnt = m.template sysarg<int>(2);
-    if (iovcnt < 0 || iovcnt > 64) { m.set_result(-EINVAL); return; }
-
-    int64_t total = 0;
-    for (int i = 0; i < iovcnt; i++) {
-        uint64_t iov[2]; /* guest struct iovec, riscv64: base, len */
-        m.copy_from_guest(iov, g_iov + (uint64_t)i * 16, 16);
-        if (iov[1] == 0) continue;
-        std::vector<uint8_t> tmp(iov[1]);
-        m.copy_from_guest(tmp.data(), iov[0], iov[1]);
-        if (vfd >= GFS_FD_BASE) {
-            int64_t n = zf_guestfs_write(ctx->fs, vfd - GFS_FD_BASE, tmp.data(), iov[1]);
-            if (n < 0) { m.set_result(total > 0 ? total : n); return; }
-            total += n;
-            if ((uint64_t)n < iov[1]) break;
-        } else {
-            fprintf(stderr, "zone %u guest: %.*s", ctx->z_id, (int)iov[1],
-                    (const char *)tmp.data());
-            total += (int64_t)iov[1];
-        }
-    }
-    m.set_result(total);
+    m.set_result(-ENOSYS);
 }
 
-static void sys_lseek(SandboxMachine &m)
-{
-    auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    const int64_t off = (int64_t)m.sysarg(1);
-    const int whence = m.template sysarg<int>(2);
-    if (vfd < GFS_FD_BASE) { m.set_result(-ESPIPE); return; }
-    m.set_result(zf_guestfs_lseek(ctx->fs, vfd - GFS_FD_BASE, off, whence));
-}
+/* --- guest console ---------------------------------------------------- */
 
-/* Minimal stat: Godot's boot path checks existence and size (its
- * newfstatat on godot.log before creating it, per the zone-guest-godot
- * strace). st_size at offset 48, st_mode at 16 (riscv64 struct stat);
- * everything else zeros. */
-static void fill_stat(SandboxMachine &m, uint64_t g_statbuf, int64_t size)
-{
-    uint8_t st[128];
-    memset(st, 0, sizeof(st));
-    const uint32_t mode = 0100644; /* S_IFREG | 0644 */
-    memcpy(st + 16, &mode, 4);
-    memcpy(st + 48, &size, 8);
-    m.copy_to_guest(g_statbuf, st, sizeof(st));
-}
-
-static void sys_fstat(SandboxMachine &m)
+/*
+ * setup_minimal_syscalls installs libriscv's own write(), which goes
+ * to the host's stdout untagged. Replacing it keeps every guest line
+ * attributed to its zone, and keeps a guest's printf working without
+ * the guest needing ZONE_PRINT for ordinary output.
+ */
+static void sys_write(SandboxMachine &m)
 {
     auto *ctx = ctx_of(m);
-    const int vfd = m.template sysarg<int>(0);
-    const auto g_statbuf = m.sysarg(1);
-    int64_t size = 0;
-    if (vfd >= GFS_FD_BASE) {
-        size = zf_guestfs_size(ctx->fs, vfd - GFS_FD_BASE);
-        if (size < 0) { m.set_result(size); return; }
-    }
-    fill_stat(m, g_statbuf, size);
-    m.set_result(0);
-}
-
-static void sys_newfstatat(SandboxMachine &m)
-{
-    auto *ctx = ctx_of(m);
-    const auto g_path = m.sysarg(1);
-    const auto g_statbuf = m.sysarg(2);
-    std::string path = m.memory.memstring(g_path);
-
-    int64_t size = zf_guestfs_stat_size(ctx->fs, path.c_str());
-    if (size < 0) { m.set_result(size); return; }
-    fill_stat(m, g_statbuf, size);
-    m.set_result(0);
-}
-
-static void sys_mkdirat(SandboxMachine &m)
-{
-    /* Directories are implicit in a flat key namespace; creation
-     * always succeeds. Matches the guest's mkdir -p idiom (Godot's
-     * make_dir_recursive) without tracking empty directories. */
-    m.set_result(0);
-}
-
-static void sys_unlinkat(SandboxMachine &m)
-{
-    auto *ctx = ctx_of(m);
-    const auto g_path = m.sysarg(1);
-    std::string path = m.memory.memstring(g_path);
-    m.set_result(zf_guestfs_unlink(ctx->fs, path.c_str()));
+    const uint64_t len = m.sysarg(2);
+    if (len == 0) { m.set_result(0); return; }
+    std::string s = guest_str(m, m.sysarg(1), len);
+    fprintf(stderr, "zone %u guest: %.*s", ctx->z_id, (int)s.size(), s.data());
+    m.set_result((int64_t)len);
 }
 
 /* --- thread body ------------------------------------------------------- */
+
+/*
+ * There is no content-seeding path here, deliberately.
+ *
+ * An earlier revision copied a host directory into the KV store so a
+ * guest could read its content pack back out. That paid FDB write
+ * cost, storage quota, and replication for bytes that are immutable,
+ * identical in every zone, and already addressable by content hash
+ * from the CDN. Content does not belong in a transactional database.
+ *
+ * The split this loader now keeps:
+ *   content (immutable, shared)  -> the guest ELF itself for script
+ *                                   guests; a read-only bind mount for
+ *                                   bubblewrap engine guests
+ *   state   (mutable, per-zone)  -> zf_guest_kv, which is what FDB's
+ *                                   transactions and durability are
+ *                                   actually for
+ */
 
 struct guest_thread_arg {
     sandbox_guest_config_t cfg;
@@ -224,13 +223,13 @@ static void *guest_thread_main(void *varg)
     const uint32_t z_id = arg->cfg.z_id;
 
     /*
-     * Admin-plane gate (RFD 0092/0094): loading a guest is a MODIFY
-     * action, owner-only. Identity is the documented gap (README:
-     * TLS cert/key still NULL/NULL), so until a real subject exists,
-     * the claim is the process operator's own OWNER relation -- the
-     * operator started this binary with -g, which IS ownership of the
-     * process. The rebac_check call is real and stays on this path so
-     * the wiring never needs to move when identity lands.
+     * Admin-plane gate (rfd/0092, rfd/0094): loading a guest is a
+     * MODIFY action, owner-only. Identity is the documented gap
+     * (README: TLS cert/key still NULL/NULL), so until a real subject
+     * exists the claim is the process operator's own OWNER relation --
+     * the operator started this binary with -g, which IS ownership of
+     * the process. The rebac_check call is real and stays on this path
+     * so the wiring never needs to move when identity lands.
      */
     const rebac_relation_t operator_claim[] = { REBAC_RELATION_OWNER };
     if (!rebac_check(operator_claim, 1, REBAC_ACTION_MODIFY)) {
@@ -249,15 +248,14 @@ static void *guest_thread_main(void *varg)
     std::vector<uint8_t> elf((std::istreambuf_iterator<char>(f)),
                              std::istreambuf_iterator<char>());
 
-    zf_guestfs_limits_t limits = {
-        ZF_GUESTFS_MAX_FILE_BYTES_DEFAULT,
-        ZF_GUESTFS_MAX_TOTAL_BYTES_DEFAULT,
-        ZF_GUESTFS_MAX_OPEN_DEFAULT,
-        ZF_GUESTFS_MAX_PATH_DEFAULT,
+    zf_guest_kv_limits_t limits = {
+        ZF_GUEST_KV_MAX_VALUE_BYTES_DEFAULT,
+        ZF_GUEST_KV_MAX_TOTAL_BYTES_DEFAULT,
+        ZF_GUEST_KV_MAX_KEY_LEN_DEFAULT,
     };
-    zf_guestfs_t *fs = zf_guestfs_create(arg->cluster_file.c_str(), z_id, &limits);
-    if (!fs) {
-        fprintf(stderr, "zone %u: zf_guestfs_create failed\n", z_id);
+    zf_guest_kv_t *kv = zf_guest_kv_create(arg->cluster_file.c_str(), z_id, &limits);
+    if (!kv) {
+        fprintf(stderr, "zone %u: zf_guest_kv_create failed\n", z_id);
         delete arg;
         return nullptr;
     }
@@ -267,26 +265,47 @@ static void *guest_thread_main(void *varg)
         options.memory_max = arg->cfg.memory_max;
         SandboxMachine machine{elf, options};
 
-        sandbox_ctx ctx{fs, z_id};
+        sandbox_ctx ctx{kv, z_id};
         machine.set_userdata(&ctx);
 
-        /* Linux syscall base WITHOUT host filesystem and WITHOUT
-         * sockets -- the two false arguments are the isolation
-         * contract, then the VFS layer overrides the file syscalls. */
-        machine.setup_linux_syscalls(false, false);
-        machine.setup_posix_threads();
-        machine.setup_linux({"guest", "--headless"}, {"LC_ALL=C", "HOME=/"});
+        /*
+         * Minimal syscalls only: close, lseek, write, fstat, exit,
+         * brk, ebreak. No filesystem, no sockets, no process table --
+         * not because those are switched off, but because they were
+         * never installed. There is no FileDescriptors object, no
+         * network namespace to reach, and nothing to escape from.
+         */
+        machine.setup_minimal_syscalls();
+        machine.setup_linux({"guest"}, {"LC_ALL=C"});
 
-        SandboxMachine::install_syscall_handler(34, sys_mkdirat);
-        SandboxMachine::install_syscall_handler(35, sys_unlinkat);
-        SandboxMachine::install_syscall_handler(56, sys_openat);
-        SandboxMachine::install_syscall_handler(57, sys_close);
-        SandboxMachine::install_syscall_handler(62, sys_lseek);
-        SandboxMachine::install_syscall_handler(63, sys_read);
         SandboxMachine::install_syscall_handler(64, sys_write);
-        SandboxMachine::install_syscall_handler(66, sys_writev);
-        SandboxMachine::install_syscall_handler(79, sys_newfstatat);
-        SandboxMachine::install_syscall_handler(80, sys_fstat);
+        SandboxMachine::install_syscall_handler(ZONE_KV_GET, ecall_kv_get);
+        SandboxMachine::install_syscall_handler(ZONE_KV_SET, ecall_kv_set);
+        SandboxMachine::install_syscall_handler(ZONE_KV_DEL, ecall_kv_del);
+        SandboxMachine::install_syscall_handler(ZONE_KV_LIST, ecall_kv_list);
+        SandboxMachine::install_syscall_handler(ZONE_PRINT, ecall_print);
+        SandboxMachine::install_syscall_handler(ZONE_ENTROPY, ecall_entropy);
+        SandboxMachine::install_syscall_handler(ZONE_OBJ_GET, ecall_obj_unimplemented);
+        SandboxMachine::install_syscall_handler(ZONE_OBJ_PUT, ecall_obj_unimplemented);
+
+        /*
+         * Anything else returns -ENOSYS instead of killing the guest.
+         * libriscv's default throws a machine exception, which ends a
+         * guest at whatever unimplemented call it happens to reach
+         * first. A real kernel answers an unknown syscall with an
+         * errno, and libc code handles that everywhere, so a guest
+         * built against a fuller libc degrades instead of dying.
+         * Logged once per number, so an unexpected capability need
+         * shows up in the zone log.
+         */
+        SandboxMachine::on_unhandled_syscall = [](SandboxMachine &mm, size_t num) {
+            static bool seen[1024] = {false};
+            if (num < 1024 && !seen[num]) {
+                seen[num] = true;
+                fprintf(stderr, "zone guest: syscall %zu unimplemented, -ENOSYS\n", num);
+            }
+            mm.set_result(-ENOSYS);
+        };
 
         fprintf(stderr, "zone %u: guest booting (%zu byte ELF, %llu MB mem, %llu Minstr budget)\n",
                 z_id, elf.size(),
@@ -302,7 +321,7 @@ static void *guest_thread_main(void *varg)
         fprintf(stderr, "zone %u: guest fault: %s\n", z_id, e.what());
     }
 
-    zf_guestfs_destroy(fs);
+    zf_guest_kv_destroy(kv);
     delete arg;
     return nullptr;
 }
