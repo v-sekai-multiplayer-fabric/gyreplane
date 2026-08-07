@@ -46,19 +46,32 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(cmake/picoquic.cmake)
 include(cmake/qcbor.cmake)
 
+# The guest sandbox (src/sandbox/, RFD 0092/0094): libriscv built
+# in-tree, C++20 (libriscv's own floor). RISCV_BINARY_TRANSLATION off
+# for the same reason fly/Containerfile documented before the MUD
+# removal: the default links libtcc, a full embedded C compiler, whose
+# memory cost OOM-killed a 256 MB Fly machine -- and RFD 0092 gates
+# execution budgets via ReBAC, not via a JIT racing them.
+enable_language(CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(RISCV_BINARY_TRANSLATION OFF CACHE BOOL "" FORCE)
+add_subdirectory(thirdparty/libriscv/lib)
+
 file(GLOB_RECURSE HANDLER_SOURCES "src/handlers/*.c")
 file(GLOB SOURCES "src/*.c")
 file(GLOB TRANSPORT_SOURCES "src/transport/*.c")
 file(GLOB GEN_SOURCES "src/gen/*.c")
 file(GLOB PHYSICS_SOURCES "src/physics/*.c")
+file(GLOB SANDBOX_SOURCES "src/sandbox/*.c" "src/sandbox/*.cpp")
 
-add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES} ${GEN_SOURCES} ${PHYSICS_SOURCES})
+add_executable(${PROJECT_NAME} ${HANDLER_SOURCES} ${SOURCES} ${TRANSPORT_SOURCES} ${GEN_SOURCES} ${PHYSICS_SOURCES} ${SANDBOX_SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     src ${CMAKE_BINARY_DIR} ${H2O_INCLUDE} ${OPENSSL_INCLUDE} ${FDB_INCLUDE} ${YAJL_INCLUDE})
 target_compile_definitions(${PROJECT_NAME} PRIVATE H2O_USE_LIBUV=0)
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS} ${WARNING_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_OPTIONS})
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored qcbor_vendored m)
+    ${H2O_LIB} ${FDB_C_LIB} ${SSL_LIB} ${CRYPTO_LIB} ${Z_LIB} ${YAJL_LIB} picoquic_vendored qcbor_vendored riscv m)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)

@@ -37,6 +37,7 @@
 
 #include "error.h"
 #include "global_data.h"
+#include "sandbox/sandbox_guest.h"
 #include "transport/webtransport_server.h"
 
 #define DEFAULT_PORT 7443 /* matches zone-server's UDP 7443, per zone.ex's x-webtransport spec */
@@ -140,7 +141,11 @@ static void usage(const char *prog)
             "      vars (raw PEM content, zone-server's own Fly secrets\n"
             "      convention) if neither is given. No TLS handshake\n"
             "      (smoke-test mode) if none of the above are set.\n"
-            "  -k  TLS private key PEM file. See -t.\n",
+            "  -k  TLS private key PEM file. See -t.\n"
+            "  -g  Guest ELF path: boot this riscv64 guest in the libriscv\n"
+            "      sandbox on a dedicated thread (RFD 0092/0094). The guest\n"
+            "      gets the FDB-backed VFS and no host fs, no sockets, no\n"
+            "      event-loop access. Optional.\n",
             prog);
 }
 
@@ -180,9 +185,10 @@ int main(int argc, char *argv[])
     bool have_z_id = false;
     const char *cli_cert = NULL;
     const char *cli_key = NULL;
+    const char *guest_elf = NULL;
 
     int opt;
-    while ((opt = getopt(argc, argv, "a:c:p:z:t:k:h")) != -1) {
+    while ((opt = getopt(argc, argv, "a:c:p:z:t:k:g:h")) != -1) {
         switch (opt) {
         case 'a': config.worker_count = (size_t)atoi(optarg); break;
         case 'c': config.fdb_cluster_file = optarg; break;
@@ -190,6 +196,7 @@ int main(int argc, char *argv[])
         case 'z': z_id = atol(optarg); have_z_id = true; break;
         case 't': cli_cert = optarg; break;
         case 'k': cli_key = optarg; break;
+        case 'g': guest_elf = optarg; break;
         case 'h':
         default: usage(argv[0]); return opt == 'h' ? 0 : 1;
         }
@@ -264,6 +271,26 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "zone-server-h2o: zone %u, %zu worker(s), QUIC transport on port %d (thread 0 only)\n",
             (uint32_t)z_id, config.worker_count, port);
+
+    /* Guest boot happens after the worker threads exist but the guest
+     * thread itself is fully independent of them: it blocks on FDB
+     * futures directly (zf_guestfs), which requires the FDB network to
+     * be live -- fdb_run_network() below runs it on this main thread,
+     * and fdb_global_init already called fdb_setup_network. The
+     * ordering is safe because fdb futures created before the network
+     * runs simply wait for it. */
+    if (guest_elf != NULL) {
+        sandbox_guest_config_t guest_cfg = {
+            .elf_path = guest_elf,
+            .cluster_file = config.fdb_cluster_file,
+            .z_id = (uint32_t)z_id,
+            .memory_max = 0,       /* defaults, see sandbox_guest.h */
+            .max_instructions = 0,
+        };
+        if (sandbox_guest_start(&guest_cfg) != 0) {
+            fprintf(stderr, "zone-server-h2o: guest thread failed to start\n");
+        }
+    }
 
     fdb_run_network();
 
