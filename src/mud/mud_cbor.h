@@ -27,7 +27,7 @@ typedef struct {
 /* Builds the mud_boot() config: {"@context", "@type": "MudBootConfig",
  * "seed", "objective", "marked_target", "max_turns"}, matching the
  * decision doc's own MudBootConfig shape. */
-mud_cbor_buf_t mud_cbor_encode_boot_config(int64_t seed, const char *objective, const char *marked_target, int64_t max_turns);
+mud_cbor_buf_t mud_cbor_encode_boot_config(int64_t seed, const char *domain, const char *objective, const char *marked_target, int64_t max_turns);
 
 /* Builds one mud_step() command: {"@type": "MudCommand", "command",
  * "args": [...], "message"}, matching the decision doc's own

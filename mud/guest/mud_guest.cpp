@@ -47,6 +47,13 @@ constexpr const char *JSONLD_CONTEXT = "https://v-sekai-multiplayer-fabric.dev/m
 
 constexpr const char *OBJECTIVE_GAIN_WATCH_TRUST = "gain_watch_trust";
 constexpr const char *OBJECTIVE_IDENTIFY_MARKED_CONTACT = "identify_marked_contact";
+/* The Gyre (multiplayer-fabric-manuals RFD 0085): the second, much
+ * smaller domain this guest now serves alongside Middleham. Its own
+ * objective is pure exploration, matching RFD 0085's own party/tone
+ * decision (exploration-forward, no combat needed to finish a loop). */
+constexpr const char *DOMAIN_MIDDLEHAM = "middleham";
+constexpr const char *DOMAIN_THE_GYRE = "the_gyre";
+constexpr const char *OBJECTIVE_EXPLORE_GYRE = "explore_gyre";
 
 /* ---------------------------------------------------------------------
  * ChaCha20 (RFC 8439) block function -- the keystream primitive behind
@@ -394,6 +401,27 @@ static const std::vector<std::pair<std::string, Room>> &room_templates() {
     return rooms;
 }
 
+/* The Gyre's smallest room set (RFD 0085 in multiplayer-fabric-manuals):
+ * two rooms, one exit each way, no items, no NPCs. Deliberately the
+ * smallest possible loop -- look, go, look -- not the full room graph
+ * RFD 0085 describes. Room keys and descriptions are taken directly
+ * from that RFD's "World map and zones" section. */
+static const std::vector<std::pair<std::string, Room>> &gyre_room_templates() {
+    static const std::vector<std::pair<std::string, Room>> rooms = {
+        {"decanting_floor", {"The Decanting Floor",
+            "A freezing, sterile room filled with hundreds of suspended "
+            "Frames. Automated robotic arms attach players to their new "
+            "bodies.",
+            {{"east", "splicers_den"}}, {}, {}}},
+        {"splicers_den", {"The Splicer's Den",
+            "A makeshift clinic lit by harsh LED strips. A flickering "
+            "display board flashes today's rates for Integrity patching "
+            "and limb alignment.",
+            {{"west", "decanting_floor"}}, {}, {}}},
+    };
+    return rooms;
+}
+
 static const std::map<std::string, std::string> &item_descriptions() {
     static const std::map<std::string, std::string> items = {
         {"guard_token", "A stamped pass token used by patrol officers."},
@@ -481,9 +509,16 @@ struct PlayerAction {
 
 class MiddlehamStateMachine {
 public:
-    MiddlehamStateMachine(uint64_t seed, std::string objective, std::string marked_target_hint, int max_turns)
+    /* domain selects which room set/rules this session runs: DOMAIN_MIDDLEHAM
+     * (default, unchanged) or DOMAIN_THE_GYRE (RFD 0085's smallest loop).
+     * The class keeps its Middleham-era name for now -- renaming it ripples
+     * across this whole file for no behavior change, and stays a real
+     * follow-up once a third domain lands, not a "smallest loop" task. */
+    MiddlehamStateMachine(uint64_t seed, std::string objective, std::string marked_target_hint,
+                           int max_turns, std::string domain = DOMAIN_MIDDLEHAM)
         : seed_(seed), rng_(seed), objective_(std::move(objective)), max_turns_(max_turns),
-          current_room_("city_gate") {
+          domain_(std::move(domain)),
+          current_room_(domain_ == DOMAIN_THE_GYRE ? "decanting_floor" : "city_gate") {
         objective_state_watch_talks_ = 0;
         objective_state_watch_recommendation_requests_ = 0;
         objective_state_direct_objective_probes_ = 0;
@@ -493,10 +528,12 @@ public:
         location_visits_.push_back(current_room_);
 
         clone_rooms();
-        seed_npcs();
-        seed_marked(marked_target_hint);
-        for (auto &kv : npc_templates()) {
-            suspect_scores_[kv.first] = 0;
+        if (domain_ != DOMAIN_THE_GYRE) {
+            seed_npcs();
+            seed_marked(marked_target_hint);
+            for (auto &kv : npc_templates()) {
+                suspect_scores_[kv.first] = 0;
+            }
         }
     }
 
@@ -512,6 +549,14 @@ public:
                    has_unique_top_suspect() &&
                    infer_suspect() == marked_target_ &&
                    objective_state_clue_count_ >= 1;
+        }
+        if (objective_ == OBJECTIVE_EXPLORE_GYRE) {
+            bool seen_decanting = false, seen_splicers = false;
+            for (auto &room : location_visits_) {
+                if (room == "decanting_floor") seen_decanting = true;
+                if (room == "splicers_den") seen_splicers = true;
+            }
+            return seen_decanting && seen_splicers;
         }
         return false;
     }
@@ -709,9 +754,13 @@ public:
 
         if (objective_complete()) {
             finished_ = true;
-            lines.push_back(objective_ == OBJECTIVE_GAIN_WATCH_TRUST
-                ? "Captain Ser Alarik indicates he can sponsor your application."
-                : "You have enough evidence to identify a likely Marked contact.");
+            if (objective_ == OBJECTIVE_GAIN_WATCH_TRUST) {
+                lines.push_back("Captain Ser Alarik indicates he can sponsor your application.");
+            } else if (objective_ == OBJECTIVE_EXPLORE_GYRE) {
+                lines.push_back("You have seen both rooms this loop covers.");
+            } else {
+                lines.push_back("You have enough evidence to identify a likely Marked contact.");
+            }
         }
 
         std::string narration;
@@ -749,8 +798,12 @@ public:
 
 private:
     void clone_rooms() {
-        for (auto &kv : room_templates()) {
+        const auto &templates = (domain_ == DOMAIN_THE_GYRE) ? gyre_room_templates() : room_templates();
+        for (auto &kv : templates) {
             rooms_[kv.first] = kv.second;
+        }
+        if (domain_ == DOMAIN_THE_GYRE) {
+            return; /* no items to shuffle in the smallest Gyre loop */
         }
 
         std::vector<std::string> move_items = {"guard_token", "tariff_letter", "old_map"};
@@ -1081,6 +1134,7 @@ private:
     Rng rng_;
     std::string objective_;
     int max_turns_;
+    std::string domain_ = DOMAIN_MIDDLEHAM;
     int turn_ = 0;
     std::string current_room_;
     std::vector<std::string> inventory_;
@@ -1148,12 +1202,19 @@ long mud_boot(const uint8_t *cfg_cbor, size_t cfg_len) {
     using namespace mud;
     mudcbor::Value cfg = mudcbor::decode(cfg_cbor, cfg_len);
     uint64_t seed = (uint64_t)cfg.get_int("seed", 0);
-    std::string objective = cfg.get_str("objective", OBJECTIVE_GAIN_WATCH_TRUST);
+    /* domain: "middleham" (default) or "the_gyre" -- selects the room set
+     * and objective mud_boot() starts, per RFD 0085 in
+     * multiplayer-fabric-manuals. Unknown values fall back to Middleham
+     * rather than failing boot, matching this guest's existing tolerant
+     * cfg.get_str() defaulting for every other field here. */
+    std::string domain = cfg.get_str("domain", DOMAIN_MIDDLEHAM);
+    std::string default_objective = (domain == DOMAIN_THE_GYRE) ? OBJECTIVE_EXPLORE_GYRE : OBJECTIVE_GAIN_WATCH_TRUST;
+    std::string objective = cfg.get_str("objective", default_objective);
     std::string marked_hint = cfg.get_str("marked_target", "");
     int max_turns = (int)cfg.get_int("max_turns", 50);
 
     delete g_session;
-    g_session = new MiddlehamStateMachine(seed, objective, marked_hint, max_turns);
+    g_session = new MiddlehamStateMachine(seed, objective, marked_hint, max_turns, domain);
 
     Value ack = Value::object();
     ack.set("@context", Value::str(JSONLD_CONTEXT));

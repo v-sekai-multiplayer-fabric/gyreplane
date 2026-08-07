@@ -165,7 +165,7 @@ static bool spawn_orchestrator(mud_session_t *s) {
     return true;
 }
 
-mud_session_t *mud_session_get_or_create(const char *session_id, const char *objective) {
+mud_session_t *mud_session_get_or_create(const char *session_id, const char *domain, const char *objective) {
     mud_session_t *existing = find_session(session_id);
     if (existing != NULL) {
         return existing;
@@ -181,7 +181,7 @@ mud_session_t *mud_session_get_or_create(const char *session_id, const char *obj
     }
 
     int64_t seed = (int64_t)(session_id_hash(session_id) & 0x7FFFFFFF);
-    mud_cbor_buf_t cfg = mud_cbor_encode_boot_config(seed, objective, NULL, 50);
+    mud_cbor_buf_t cfg = mud_cbor_encode_boot_config(seed, domain, objective, NULL, 50);
     bool sent = send_frame(s->to_child_fd, cfg.data, cfg.len);
     mud_cbor_buf_free(&cfg);
     if (!sent) {

@@ -11,6 +11,10 @@
     max-width: 720px; margin: 0 auto; padding: 1rem;
   }
   h1 { font-size: 1.1rem; color: #8fd; margin: 0 0 0.5rem 0; }
+  #modeRow { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;
+             color: #999; font-size: 0.9em; }
+  #modeSelect { background: #101015; color: #d8d8d0; border: 1px solid #333;
+                padding: 0.3rem 0.5rem; font-family: inherit; }
   #log { border: 1px solid #333; padding: 0.75rem; height: 60vh; overflow-y: auto;
          white-space: pre-wrap; line-height: 1.4; background: #101015; }
   #log .turn { margin-bottom: 0.75rem; }
@@ -25,7 +29,14 @@
 </style>
 </head>
 <body>
-<h1>Middleham</h1>
+<h1 id="title">Middleham</h1>
+<div id="modeRow">
+  <label for="modeSelect">Setting:</label>
+  <select id="modeSelect">
+    <option value="middleham">Middleham</option>
+    <option value="the_gyre">The Gyre</option>
+  </select>
+</div>
 <div id="log"></div>
 <form id="commandForm">
   <input id="commandInput" autocomplete="off" placeholder="look / go north / talk captain hello / examine token" autofocus>
@@ -33,7 +44,7 @@
 </form>
 <div id="hint">
   Commands: look, go &lt;direction&gt;, talk &lt;npc&gt; &lt;message&gt;, examine &lt;thing&gt;, take &lt;item&gt;, give &lt;item&gt; &lt;npc&gt;, use &lt;item&gt;.
-  No account needed -- this browser's own session id is kept in localStorage.
+  No account needed -- this browser's own session id is kept in localStorage, one per setting.
 </div>
 <script src="mud.js"></script>
 </body>
