@@ -22,6 +22,18 @@
 #define GKV_KEY_MAX 700
 #define GKV_QUOTA_POLL_NS (100 * 1000 * 1000) /* 100 ms */
 
+/* FoundationDB gives a transaction 5 seconds. Both constants below
+ * exist to keep every transaction here inside that budget, rather than
+ * discovering the limit as error 1007 at run time.
+ *
+ * The 5 s applies to ONE transaction, not to a call. The quota
+ * block-and-poll is deliberately unbounded (rfd/0092 makes budget
+ * extension an admin-plane action), and that is safe because the sleep
+ * happens BETWEEN transactions: gkv_txn resets before it sleeps, so a
+ * stalled guest never holds a read version across the wait. */
+#define GKV_TXN_TIMEOUT_MS 5000
+#define GKV_LIST_MAX_ROWS  1024
+
 struct zf_guest_kv {
     FDBDatabase         *db;
     uint32_t             z_id;
@@ -120,12 +132,27 @@ static int gkv_txn(zf_guest_kv_t *kv, gkv_txn_fn fn, void *ctx)
     fdb_error_t err = fdb_database_create_transaction(kv->db, &tr);
     if (err) return -EIO;
 
+    /* State the 5 s budget in code instead of inheriting it. FDB then
+     * fails a too-slow transaction as 1007 on its own schedule, which
+     * fdb_transaction_on_error below retries against a fresh read
+     * version. */
+    int64_t tmo = GKV_TXN_TIMEOUT_MS;
+    fdb_transaction_set_option(tr, FDB_TR_OPTION_TIMEOUT,
+                               (const uint8_t *)&tmo, sizeof(tmo));
+
     for (;;) {
         int rc = fn(kv, tr, ctx);
         if (rc == GKV_EAGAIN_QUOTA) {
+            /* Reset BEFORE sleeping. The wait is unbounded by design,
+             * and a 100 ms sleep on a live read version would burn the
+             * 5 s budget of a transaction we are about to discard --
+             * turning a stall into a 1007 storm. Reset first, so every
+             * retry starts a clean 5 s window. */
+            fdb_transaction_reset(tr);
+            fdb_transaction_set_option(tr, FDB_TR_OPTION_TIMEOUT,
+                                       (const uint8_t *)&tmo, sizeof(tmo));
             struct timespec ts = { 0, GKV_QUOTA_POLL_NS };
             nanosleep(&ts, NULL);
-            fdb_transaction_reset(tr);
             continue;
         }
         if (rc < 0) {
@@ -375,11 +402,23 @@ static int gkv_list_txn(zf_guest_kv_t *kv, FDBTransaction *tr, void *vctx)
     uint8_t root[GKV_KEY_MAX];
     size_t rootlen = gkv_data_key(kv, root, "");
 
+    /* Bounded on purpose. WANT_ALL with no row limit asks FDB for the
+     * whole range in one transaction, and a guest with many keys can
+     * push that past FDB's 5 s transaction limit. That surfaces as
+     * error 1007 (transaction_too_old), which fdb_transaction_on_error
+     * reports as RETRYABLE -- so gkv_txn would retry a read that cannot
+     * ever fit, forever. A livelock, not an error.
+     *
+     * The row cap makes the read fit by construction. It costs nothing
+     * the caller did not already accept: zone_abi.h documents that
+     * ZONE_KV_LIST truncates, and the buf_len check below truncates on
+     * a whole-entry boundary anyway. EXACT matches the cap, where
+     * WANT_ALL would ignore it. */
     FDBFuture *f = fdb_transaction_get_range(
         tr,
         FDB_KEYSEL_FIRST_GREATER_OR_EQUAL(begin, (int)blen),
         FDB_KEYSEL_FIRST_GREATER_OR_EQUAL(end, (int)elen),
-        0, 0, FDB_STREAMING_MODE_WANT_ALL, 0, 0, 0);
+        GKV_LIST_MAX_ROWS, 0, FDB_STREAMING_MODE_EXACT, 0, 0, 0);
     fdb_future_block_until_ready(f);
     if (fdb_future_get_error(f)) { fdb_future_destroy(f); return -EIO; }
 
