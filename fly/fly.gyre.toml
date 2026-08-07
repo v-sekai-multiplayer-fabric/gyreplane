@@ -21,6 +21,19 @@ primary_region = "iad"
 #    records the real consequence: Chromium's built-in resolver can fail
 #    on an IPv6-only hostname that curl resolves instantly, in which case
 #    navigate to the bracketed IPv6 literal instead.
+#  - .dev is a Google-owned TLD on every major browser's HSTS preload
+#    list -- ANY *.dev hostname gets force-upgraded to https:// by the
+#    browser itself, unconditionally, with no server-side opt-out.
+#    Confirmed real, not theoretical: a headed Chromium session
+#    navigating to http://gyre.fly.dev/3d.html silently rewrote the
+#    request to https://gyre.fly.dev/3d.html and failed with
+#    net::ERR_ABORTED, while curl (which does not do this rewrite)
+#    got a normal 200 the whole time -- the app looked broken only in
+#    a real browser. The [[services.ports]] 443/tls block below relies
+#    on Fly's own automatic edge TLS termination for *.fly.dev (Fly
+#    terminates TLS and forwards plain HTTP to internal_port 8080) --
+#    no TLS_CERT/TLS_KEY on this app's own env, still real per
+#    src/mud/mud_http.c's documented fallback.
 
 [build]
   dockerfile = "fly/Containerfile"
@@ -44,6 +57,15 @@ primary_region = "iad"
   [[services.ports]]
     port = 80
     handlers = ["http"]
+  # See the .dev/HSTS comment above -- every real browser upgrades this
+  # app's own hostname to https:// unconditionally, so a 443 listener
+  # is not optional. "tls" here means Fly's own edge does TLS
+  # termination (its automatic *.fly.dev cert); "http" after it means
+  # Fly forwards plain decrypted HTTP to internal_port 8080 same as
+  # port 80 above -- no change needed on this app's own side.
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
 
   # Kept as plain defense in depth, no longer covering for a known bug.
   # It was added when the first POST /api/mud/command reliably killed
