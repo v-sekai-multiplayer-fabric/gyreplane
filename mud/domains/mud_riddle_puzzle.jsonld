@@ -1,0 +1,58 @@
+{
+  "@context": {
+    "vsekai": "https://v-sekai.org/",
+    "domain": "vsekai:planning/domain/"
+  },
+  "@type": "domain:Definition",
+  "name": "mud_riddle_puzzle",
+  "variables": [
+    { "name": "submitted", "init": { "player_1": null } },
+    { "name": "trust", "init": { "watch": 0 } },
+    { "name": "riddle_solved", "init": { "player_1": false } }
+  ],
+  "actions": {
+    "submit_answer": {
+      "params": ["player", "value"],
+      "body": [
+        { "pointer/set": "/submitted/{player}", "value": "{value}" }
+      ]
+    },
+    "grant_trust": {
+      "params": ["player"],
+      "body": [
+        { "pointer/set": "/riddle_solved/{player}", "value": true },
+        { "pointer/set": "/trust/watch", "value": 10 }
+      ]
+    }
+  },
+  "methods": {
+    "attempt_riddle": {
+      "params": ["player"],
+      "alternatives": [
+        {
+          "name": "already_solved",
+          "check": [
+            { "eval": { "type": "math/eq",
+                        "a": { "type": "pointer/get", "pointer": "/riddle_solved/{player}" },
+                        "b": true } }
+          ],
+          "subtasks": []
+        },
+        {
+          "name": "correct_answer",
+          "check": [
+            { "eval": { "type": "math/eq",
+                        "a": { "type": "pointer/get", "pointer": "/submitted/{player}" },
+                        "b": "42" } }
+          ],
+          "subtasks": [["grant_trust", "{player}"]]
+        },
+        { "name": "wrong_answer", "subtasks": [] }
+      ]
+    }
+  },
+  "todo_list": [
+    ["submit_answer", "player_1", "42"],
+    ["attempt_riddle", "player_1"]
+  ]
+}
