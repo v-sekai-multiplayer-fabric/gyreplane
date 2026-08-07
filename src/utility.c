@@ -81,14 +81,22 @@ int send_json_gen(json_generator_t *gen, bool copy, h2o_req_t *req)
     return 0;
 }
 
-const char *get_query_param(const char *query, size_t query_len, const char *name, size_t name_len)
+const char *get_query_param(const char *query, size_t query_len, const char *name, size_t name_len, size_t *out_len)
 {
     const char *p = query;
     while (p < query + query_len) {
         size_t remaining = query_len - (size_t)(p - query);
-        if (remaining >= name_len && memcmp(p, name, name_len) == 0)
-            return p + name_len;
         const char *next = memchr(p, '&', remaining);
+        size_t pair_len = next ? (size_t)(next - p) : remaining;
+        /* A real key=value match needs the key followed by '=', not
+         * just a name_len-byte prefix match -- the old check matched
+         * "session_id" against "session_idx=..." too, and returned a
+         * pointer starting at the '=' itself (never skipped past it),
+         * corrupting every downstream use of the value. */
+        if (pair_len > name_len && p[name_len] == '=' && memcmp(p, name, name_len) == 0) {
+            *out_len = pair_len - name_len - 1;
+            return p + name_len + 1;
+        }
         if (!next)
             break;
         p = next + 1;

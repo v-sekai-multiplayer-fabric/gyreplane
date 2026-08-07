@@ -384,7 +384,8 @@ static int on_mud_stream(h2o_handler_t *self, h2o_req_t *req) {
 
     const char *query = req->query_at != SIZE_MAX ? req->path.base + req->query_at + 1 : NULL;
     size_t query_len = query != NULL ? req->path.len - req->query_at - 1 : 0;
-    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id")) : NULL;
+    size_t session_id_len = 0;
+    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id"), &session_id_len) : NULL;
     if (session_id == NULL) {
         send_json_error(req, 400, "missing session_id query parameter");
         return 0;
@@ -403,7 +404,10 @@ static int on_mud_stream(h2o_handler_t *self, h2o_req_t *req) {
     }
 
     memset(client, 0, sizeof(*client));
-    snprintf(client->session_id, sizeof(client->session_id), "%s", session_id);
+    /* session_id is not NUL-terminated (a raw slice of h2o's own
+     * request buffer) -- "%.*s" bounds the copy at session_id_len
+     * instead of trusting a NUL that is not guaranteed to be there. */
+    snprintf(client->session_id, sizeof(client->session_id), "%.*s", (int)session_id_len, session_id);
     client->req = req;
     client->generator.proceed = sse_proceed;
     client->generator.stop = sse_stop;
@@ -440,6 +444,90 @@ typedef struct {
     char session_id[64];
 } mud_history_ctx_t;
 
+/* ---------------------------------------------------------------------
+ * FDB's own C API contract: a future's callback runs either on the
+ * thread that called fdb_future_set_callback(), or on FDB's own
+ * network thread (fdb_run_network(), its own dedicated OS thread here,
+ * per src/main.c's fdb_run_network() call) -- not guaranteed to be the
+ * h2o worker thread that owns `req`. h2o_req_t, its pool, and
+ * h2o_start_response()/h2o_send() are not safe to touch from any
+ * thread but the one h2o's event loop runs on for that request.
+ *
+ * RFD 0073 (async-fdb-callback-chain) already documents this callback
+ * chain as running inside a worker thread with results handed back to
+ * h2o via h2o_multithread_send_message() (RFD 0072,
+ * actor-lite-worker-pool, mirrored in src/worker_pool.c) -- this
+ * handler previously skipped that hand-off and called h2o functions
+ * straight from the FDB callback. Confirmed as a real bug, not a
+ * theoretical one: AddressSanitizer caught a genuine SEGV inside
+ * libfdb_c.so on this exact path.
+ *
+ * g_mud_history_receiver is registered once, on the h2o worker
+ * thread's own loop, in mud_http_listen() below. on_mud_history_range_
+ * read() (which may run on FDB's thread) only builds a message and
+ * hands it off; on_mud_history_return() (which always runs on h2o's
+ * own thread, since h2o's multithread queue delivers it there) is the
+ * only place that touches `req`.
+ * ------------------------------------------------------------------- */
+
+typedef struct {
+    h2o_multithread_message_t super;
+    h2o_req_t *req;
+    int status;
+    char *body;    /* malloc'd, not req->pool -- pool is not thread-safe */
+    size_t body_len;
+} mud_history_return_msg_t;
+
+static h2o_multithread_receiver_t g_mud_history_receiver;
+
+static void on_mud_history_return(h2o_multithread_receiver_t *receiver, h2o_linklist_t *messages) {
+    (void)receiver;
+    while (!h2o_linklist_is_empty(messages)) {
+        h2o_linklist_t *node = messages->next;
+        h2o_linklist_unlink(node);
+        mud_history_return_msg_t *msg = (mud_history_return_msg_t *)node;
+        h2o_req_t *req = msg->req;
+
+        static h2o_generator_t generator = {NULL, NULL};
+        req->res.status = msg->status;
+        req->res.reason = msg->status == 200 ? "OK" : "error";
+        h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_CONTENT_TYPE, NULL, H2O_STRLIT("application/json"));
+        h2o_start_response(req, &generator);
+        /* h2o_strdup copies into req->pool -- safe here, this runs on
+         * h2o's own thread. msg->body (malloc'd) is freed right after,
+         * once its bytes are copied into the pool-owned iovec. */
+        h2o_iovec_t json = h2o_strdup(&req->pool, msg->body, msg->body_len);
+        h2o_send(req, &json, 1, H2O_SEND_STATE_FINAL);
+
+        free(msg->body);
+        free(msg);
+    }
+}
+
+/* Called once, from mud_http_listen() on the h2o worker thread that
+ * owns `loop` -- matches RFD 0072's own registration pattern
+ * (h2o_multithread_create_queue + h2o_multithread_register_receiver),
+ * not something on_mud_history_range_read() (a different thread) could
+ * safely do itself. */
+static void mud_history_return_init(h2o_loop_t *loop) {
+    h2o_multithread_queue_t *queue = h2o_multithread_create_queue(loop);
+    h2o_multithread_register_receiver(queue, &g_mud_history_receiver, on_mud_history_return);
+}
+
+static void mud_history_send_error(h2o_req_t *req, int status, const char *message) {
+    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)malloc(sizeof(*msg));
+    msg->req = req;
+    msg->status = status;
+    /* strdup, not the message's own storage -- fdb_get_error() returns
+     * a static string (safe to send as-is), but treating both error
+     * sources identically here is simpler and just as correct. */
+    msg->body_len = strlen(message);
+    msg->body = (char *)malloc(msg->body_len + 16);
+    int n = snprintf(msg->body, msg->body_len + 16, "{\"error\":\"%s\"}", message);
+    msg->body_len = (size_t)n;
+    h2o_multithread_send_message(&g_mud_history_receiver, &msg->super);
+}
+
 static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     mud_history_ctx_t *ctx = (mud_history_ctx_t *)arg;
     h2o_req_t *req = ctx->req;
@@ -448,7 +536,7 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     if (err) {
         fdb_future_destroy(future);
         fdb_transaction_destroy(ctx->tr);
-        send_json_error(req, 502, fdb_get_error(err));
+        mud_history_send_error(req, 502, fdb_get_error(err));
         free(ctx);
         return;
     }
@@ -460,14 +548,15 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     if (err) {
         fdb_future_destroy(future);
         fdb_transaction_destroy(ctx->tr);
-        send_json_error(req, 502, "failed to parse history range");
+        mud_history_send_error(req, 502, "failed to parse history range");
         free(ctx);
         return;
     }
 
     /* Build a real JSON array of narration strings, oldest first (the
      * range scan already returns them in big-endian-turn key order,
-     * per mud_kv_turn_key()'s own layout). */
+     * per mud_kv_turn_key()'s own layout). yajl's own buffer, not
+     * req->pool -- this may still be running on FDB's thread. */
     yajl_gen gen = yajl_gen_alloc(NULL);
     yajl_gen_array_open(gen);
     for (int i = 0; i < count; i++) {
@@ -477,19 +566,20 @@ static void on_mud_history_range_read(FDBFuture *future, void *arg) {
     const unsigned char *buf;
     size_t buf_len;
     yajl_gen_get_buf(gen, &buf, &buf_len);
-    h2o_iovec_t json = h2o_strdup(&req->pool, (const char *)buf, buf_len);
+
+    mud_history_return_msg_t *msg = (mud_history_return_msg_t *)malloc(sizeof(*msg));
+    msg->req = req;
+    msg->status = 200;
+    msg->body = (char *)malloc(buf_len);
+    memcpy(msg->body, buf, buf_len);
+    msg->body_len = buf_len;
     yajl_gen_free(gen);
 
     fdb_future_destroy(future);
     fdb_transaction_destroy(ctx->tr);
     free(ctx);
 
-    static h2o_generator_t generator = {NULL, NULL};
-    req->res.status = 200;
-    req->res.reason = "OK";
-    h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_CONTENT_TYPE, NULL, H2O_STRLIT("application/json"));
-    h2o_start_response(req, &generator);
-    h2o_send(req, &json, 1, H2O_SEND_STATE_FINAL);
+    h2o_multithread_send_message(&g_mud_history_receiver, &msg->super);
 }
 
 static int on_mud_history(h2o_handler_t *self, h2o_req_t *req) {
@@ -504,9 +594,21 @@ static int on_mud_history(h2o_handler_t *self, h2o_req_t *req) {
 
     const char *query = req->query_at != SIZE_MAX ? req->path.base + req->query_at + 1 : NULL;
     size_t query_len = query != NULL ? req->path.len - req->query_at - 1 : 0;
-    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id")) : NULL;
+    size_t session_id_len = 0;
+    const char *session_id = query != NULL ? get_query_param(query, query_len, H2O_STRLIT("session_id"), &session_id_len) : NULL;
     if (session_id == NULL) {
         send_json_error(req, 400, "missing session_id query parameter");
+        return 0;
+    }
+    /* session_id is not NUL-terminated -- strlen() here previously read
+     * past it into whatever followed in h2o's request buffer, feeding
+     * an unbounded length into mud_kv_turn_range_begin/end's memcpy
+     * into these fixed 128-byte stack buffers below. A real, previously
+     * shipped stack buffer overflow, not theoretical -- confirmed via
+     * AddressSanitizer against this exact endpoint. session_id_len from
+     * get_query_param is the query string's own real, bounded length. */
+    if (session_id_len >= sizeof(((mud_history_ctx_t *)0)->session_id)) {
+        send_json_error(req, 400, "session_id too long");
         return 0;
     }
 
@@ -517,13 +619,13 @@ static int on_mud_history(h2o_handler_t *self, h2o_req_t *req) {
     }
 
     uint8_t begin[128], end[128];
-    size_t begin_len = mud_kv_turn_range_begin(begin, session_id, strlen(session_id));
-    size_t end_len = mud_kv_turn_range_end(end, session_id, strlen(session_id));
+    size_t begin_len = mud_kv_turn_range_begin(begin, session_id, session_id_len);
+    size_t end_len = mud_kv_turn_range_end(end, session_id, session_id_len);
 
     mud_history_ctx_t *ctx = (mud_history_ctx_t *)malloc(sizeof(*ctx));
     ctx->req = req;
     ctx->tr = tr;
-    snprintf(ctx->session_id, sizeof(ctx->session_id), "%s", session_id);
+    snprintf(ctx->session_id, sizeof(ctx->session_id), "%.*s", (int)session_id_len, session_id);
 
     if (fdb_async_get_range(g_fdb_state, tr, begin, (int)begin_len, end, (int)end_len,
                              on_mud_history_range_read, ctx) != 0) {
@@ -607,6 +709,13 @@ int mud_http_listen(h2o_context_t *ctx, h2o_loop_t *loop, int port, const char *
     g_mud_accept_ctx.ctx = ctx;
     g_mud_accept_ctx.hosts = ctx->globalconf->hosts;
     g_mud_accept_ctx.ssl_ctx = NULL;
+
+    /* Registers g_mud_history_receiver on this thread's own loop --
+     * this is the h2o worker thread that will own every h2o_req_t the
+     * MUD HTTP paths see, matching mud_http_register()'s one-listener-
+     * on-zone-0 convention. See on_mud_history_range_read()'s own
+     * comment for why this hand-off exists at all. */
+    mud_history_return_init(loop);
 
     if (cert_file != NULL && key_file != NULL) {
         if (setup_tls(cert_file, key_file) != 0) {
