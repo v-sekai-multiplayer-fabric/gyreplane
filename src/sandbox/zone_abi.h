@@ -170,6 +170,17 @@
  * one the publish happens, attributed to the delegating principal,
  * because authority stays with whoever actually holds it.
  *
+ * That check is rebac_check() in src/gen/rebac.h, and it is the
+ * decision point -- not multiplayer_fabric_asset's acl_check(). The
+ * two are not rival models: acl_check POSTs an (object, relation,
+ * subject) tuple to Uro's /acl/check, so it is ReBAC too. They split
+ * by job. Uro resolves the relation graph and owns it. This host takes
+ * the resolved relation set and decides the action, from the generated
+ * table, so there is exactly one decision procedure to keep correct.
+ *
+ * Resolution happens once, when the host loads a guest. A guest ecall
+ * must never turn into an HTTP round trip to Uro.
+ *
  * This is the mechanism that lets UGC scripting produce content --
  * a guest that authors an asset publishes it through the principal
  * who authorized it, rather than the host either refusing every guest
