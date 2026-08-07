@@ -1,0 +1,47 @@
+{
+  "@context": {
+    "vsekai": "https://v-sekai.org/",
+    "domain": "vsekai:planning/domain/"
+  },
+  "@type": "domain:Definition",
+  "name": "mud_npc_request_queue",
+  "variables": [
+    { "name": "carrying", "init": { "player_1": null } },
+    { "name": "request_done", "init": { "fetch_bread": false, "deliver_letter": false } }
+  ],
+  "actions": {
+    "accept_request": {
+      "params": ["player", "req"],
+      "body": [
+        { "eval": { "type": "math/eq",
+                    "a": { "type": "pointer/get", "pointer": "/carrying/{player}" },
+                    "b": null } },
+        { "pointer/set": "/carrying/{player}", "value": "{req}" }
+      ]
+    },
+    "complete_request": {
+      "params": ["player", "req"],
+      "body": [
+        { "eval": { "type": "math/eq",
+                    "a": { "type": "pointer/get", "pointer": "/carrying/{player}" },
+                    "b": "{req}" } },
+        { "pointer/set": "/request_done/{req}", "value": true },
+        { "pointer/set": "/carrying/{player}", "value": null }
+      ]
+    }
+  },
+  "methods": {
+    "fulfill": {
+      "params": ["player", "req"],
+      "alternatives": [
+        { "name": "one_at_a_time",
+          "subtasks": [["accept_request", "{player}", "{req}"],
+                       ["complete_request", "{player}", "{req}"]] }
+      ]
+    }
+  },
+  "todo_list": [
+    ["fulfill", "player_1", "fetch_bread"],
+    ["fulfill", "player_1", "deliver_letter"]
+  ]
+}
