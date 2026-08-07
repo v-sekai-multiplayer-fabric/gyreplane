@@ -76,7 +76,7 @@ not inline here:
   `kevinzakka/mink`; also the MuJoCo-to-Jolt physics drop.
 - `rfd/0088`: transport is `picoquic` + `picotls`, not `h2o`'s own
   (absent) QUIC stack.
-- `rfd/0005`, `rfd/0011`: the actor-lite architecture and async FDB
+- `rfd/0072`, `rfd/0073`: the actor-lite architecture and async FDB
   callback chain the event loop, worker pool, and SPSC ring port as-is
   from `h2o-bench-tpcc`'s `src/`.
 
