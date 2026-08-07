@@ -6,7 +6,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list']],
   use: {
-    // baseURL intentionally not set here -- mud.spec.ts reads
+    // baseURL intentionally not set here -- each spec reads
     // MUD_BASE_URL itself and fails loudly if it is missing, rather
     // than silently defaulting to localhost and testing nothing real.
     trace: 'retain-on-failure',
