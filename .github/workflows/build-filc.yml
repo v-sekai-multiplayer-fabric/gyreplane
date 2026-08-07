@@ -21,11 +21,11 @@ jobs:
     name: build (Fil-C)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache Fil-C toolchain
         id: cache-filc
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /opt/filc
           key: filc-${{ env.FILC_VERSION }}-linux-x86_64
