@@ -130,9 +130,19 @@ int fdb_async_get_range(fdb_thread_state_t *state, FDBTransaction *tr,
                         void (*cb)(FDBFuture *, void *), void *ctx)
 {
     (void)state;
+    /* FDB_KEYSEL_FIRST_GREATER_OR_EQUAL(k, l) expands to (k, l, 0, 1),
+     * the standard begin-inclusive/end-exclusive range idiom -- the
+     * previous (begin, begin_len, 0, 0) / (end, end_len, 0, 0) was
+     * FDB_KEYSEL_LAST_LESS_THAN for both selectors instead (see
+     * fdb_c.h's own macros), selecting the last key strictly before
+     * each boundary rather than the first key at or after it. That
+     * shifts and can unboundedly widen the scanned range backward
+     * through the keyspace -- confirmed via AddressSanitizer as a
+     * real SEGV inside libfdb_c's own internals on this exact call,
+     * not a theoretical concern. */
     FDBFuture *future = fdb_transaction_get_range(tr,
-        begin, begin_len, 0, 0,
-        end, end_len, 0, 0,
+        begin, begin_len, 0, 1,
+        end, end_len, 0, 1,
         0, 0, FDB_STREAMING_MODE_WANT_ALL, 0, 0, 0);
     if (!future) {
         ERROR("fdb_transaction_get_range failed");
