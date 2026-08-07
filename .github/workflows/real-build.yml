@@ -35,7 +35,7 @@ jobs:
     name: build (real, stock clang)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -47,7 +47,7 @@ jobs:
 
       - name: Cache built h2o
         id: cache-h2o
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /opt/h2o
           key: h2o-${{ env.H2O_VERSION }}-ubuntu
