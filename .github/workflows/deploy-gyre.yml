@@ -1,0 +1,44 @@
+name: deploy gyre
+
+# Deploys the throwaway three.js/SlugHorn 3D MUD demo (fly/fly.gyre.toml,
+# app "gyre" on Fly.io) for real, via CI -- not from anyone's local
+# machine. FLY_API_TOKEN is a deploy-scoped token
+# (`flyctl tokens create deploy -a gyre`), stored as a repo secret, not
+# a full org/personal token.
+#
+# Triggers only on changes that could actually affect this app: the
+# server source that gets baked into its image, the MUD web client it
+# serves, or its own fly config -- a change to, say, docs/ or an
+# unrelated RFD should not redeploy a running demo.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "mud/**"
+      - "fly/Containerfile"
+      - "fly/entrypoint.sh"
+      - "fly/fly.gyre.toml"
+      - ".github/workflows/deploy-gyre.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-gyre
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install flyctl
+        run: curl -L https://fly.io/install.sh | sh
+
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          export FLYCTL_INSTALL="/home/runner/.fly"
+          export PATH="$FLYCTL_INSTALL/bin:$PATH"
+          flyctl deploy -c fly/fly.gyre.toml -a gyre --remote-only
