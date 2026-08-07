@@ -41,4 +41,12 @@ jobs:
         run: |
           export FLYCTL_INSTALL="/home/runner/.fly"
           export PATH="$FLYCTL_INSTALL/bin:$PATH"
-          flyctl deploy -c fly/fly.gyre.toml -a gyre --remote-only
+          # flyctl resolves a relative `dockerfile` path (fly.gyre.toml
+          # says "fly/Containerfile") against -c's own directory, not
+          # the repo root -- `-c fly/fly.gyre.toml` alone resolves to
+          # the nonexistent fly/fly/Containerfile. .gitignore's own
+          # comment on /fly.toml already documents this; the copy-to-
+          # root step below is the same fix, just automated instead of
+          # a human remembering to do it before every manual deploy.
+          cp fly/fly.gyre.toml fly.toml
+          flyctl deploy -c fly.toml -a gyre --remote-only
