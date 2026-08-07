@@ -142,10 +142,13 @@ static void usage(const char *prog)
             "      convention) if neither is given. No TLS handshake\n"
             "      (smoke-test mode) if none of the above are set.\n"
             "  -k  TLS private key PEM file. See -t.\n"
-            "  -g  Guest ELF path: boot this riscv64 guest in the libriscv\n"
-            "      sandbox on a dedicated thread (RFD 0092/0094). The guest\n"
-            "      gets the FDB-backed VFS and no host fs, no sockets, no\n"
-            "      event-loop access. Optional.\n",
+            "  -g  Script-guest ELF path: boot this riscv64 guest in the\n"
+            "      libriscv sandbox on a dedicated thread (rfd/0092, 0094).\n"
+            "      The guest gets the zone_abi.h ecalls and nothing else:\n"
+            "      no filesystem, no sockets, no event-loop access. Its\n"
+            "      content ships inside the ELF; its state lives in FDB.\n"
+            "      Engine-class guests run under bubblewrap instead, not\n"
+            "      here -- see rfd/0095. Optional.\n",
             prog);
 }
 
