@@ -1,8 +1,9 @@
-app            = "slughorn"
+app            = "gyre"
 primary_region = "iad"
 
-# The SlugHorn 3D MUD demo, deployed so the three.js/SlugHorn page can be
-# checked by hand in a real browser against a real server.
+# The three.js/SlugHorn 3D MUD demo (named for RFD 0085's "The Gyre"
+# setting, not the SlugHorn rendering tech), deployed so the page can
+# be checked by hand in a real browser against a real server.
 #
 # Same Hobby-plan-safe shape as fly/fly.toml's throwaway test app:
 # shared-cpu-1x, 256mb, no dedicated IPv4 (that is a separate paid
