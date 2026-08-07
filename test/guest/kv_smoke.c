@@ -7,11 +7,34 @@
  * from fdbcli, which is what distinguishes real storage from an
  * in-process buffer that merely behaves like it.
  *
- * Deliberately freestanding-ish: no libc file I/O, no allocation, no
- * threads. A guest that needed those would prove less, not more.
+ * Freestanding, and built that way (-nostdlib, see build.sh). Not
+ * "freestanding-ish": this file calls no libc function at all, so
+ * linking one in is pure cost. An earlier build linked static glibc
+ * anyway, and __libc_start_main then reached writev (66), exit_group
+ * (94), and set_tid_address (96) before main. Those looked like guest
+ * requirements. They were startup code for a userland this test never
+ * asked for, and the host correctly refused all three.
+ *
+ * The host installs 7 minimal syscalls plus this ABI. A guest that
+ * needs more than that is not a script guest.
  */
 
 #include "../../src/sandbox/zone_abi.h"
+
+int main(void);
+
+/*
+ * Entry point. No argc/argv: main takes none, and libriscv's stack
+ * setup is irrelevant to a guest that ignores it. Syscall 93 is exit,
+ * one of the 7 from setup_minimal_syscalls().
+ */
+__attribute__((naked, used)) void _start(void)
+{
+	__asm__ __volatile__(
+		"call main\n"
+		"li a7, 93\n"
+		"ecall\n");
+}
 
 static unsigned long zlen(const char *s)
 {
@@ -64,8 +87,10 @@ int main(void)
 		say("ok: missing key reports an error");
 	}
 
-	/* 3. a value past one 8 KB chunk survives chunking intact. Checks
-	 *    the boundary itself, where an off-by-one would hide. */
+	/* 3. a 20 KB value round-trips whole. Large enough that a host
+	 *    tempted to chunk it would, small enough to stay under
+	 *    ZONE_KV_MAX_VALUE -- so this passing means the host stored it
+	 *    as one value in one transaction, which is the design. */
 	static char big[20000];
 	for (int i = 0; i < 20000; i++) big[i] = (char)(i * 31 + 7);
 	const char *k2 = "smoke/big";
